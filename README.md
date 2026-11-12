@@ -74,6 +74,20 @@ The two models have different energy references: compare energies computed with 
 
 `mena models add` loads a model file with PyTorch, which can run code stored in the file: add only files you trust.
 
+## Benchmarks
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/accuracy-dark.svg">
+  <img alt="Accuracy: protein–ligand interaction error on PLF547 (Mena-LAM-s 0.297 kcal/mol) and DynaMat CMDS on Matbench Discovery (Mena-LAM-preview 0.787)" src="docs/accuracy-light.svg" width="100%">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/speed-memory-dark.svg">
+  <img alt="Speed and memory in DynaMat molecular dynamics: Mena-LAM-preview 2.4 h and 0.72 GB on one A100" src="docs/speed-memory-light.svg" width="100%">
+</picture>
+
+The web app's **Performance** tab has more results and a live speed test on your own computer.
+
 ## License
 
 Code: [Apache-2.0](LICENSE). Model weights: [CC BY 4.0](LICENSE-WEIGHTS). Third-party material and training data: [NOTICE](NOTICE).
