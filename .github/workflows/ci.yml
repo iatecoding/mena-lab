@@ -1,0 +1,36 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install PyTorch (CPU)
+        if: runner.os != 'macOS'
+        run: pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Install
+        run: pip install ".[test]"
+      - name: CLI from a clean folder
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          mena --version
+          mena models
+      - name: Tests (downloads the published weights once)
+        env:
+          MENA_TEST_DOWNLOAD: "1"
+        run: pytest tests/mena_app -q -rs
+      - name: First run downloads the weights and computes
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          mena sp caffeine --out sp_mol
+          mena sp si --out sp_si

@@ -1,0 +1,50 @@
+Mena-Lab
+Copyright 2026 Francesco Viola
+
+Code: Apache License 2.0 (LICENSE). Model weights: CC BY 4.0 (LICENSE-WEIGHTS).
+
+-------------------------------------------------------------------------------
+Third-party material included in this repository
+-------------------------------------------------------------------------------
+
+lam/models/params/dftd3_params.npz
+  DFT-D3 reference C6 coefficients and radii, taken from torch-dftd
+  (https://github.com/pfnet-research/torch-dftd), MIT License:
+
+    Copyright (c) 2021 Preferred Networks, Inc.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+  Method: S. Grimme, J. Antony, S. Ehrlich, H. Krieg, J. Chem. Phys. 132, 154104
+  (2010); S. Grimme, S. Ehrlich, L. Goerigk, J. Comput. Chem. 32, 1456 (2011).
+
+lam4/physics/data/nlh_pairs_z92.npy
+  Pair parameters of the universal short-range repulsion of K. Nordlund,
+  S. Lehtola, G. Hobler, Phys. Rev. A 111, 032818 (2025).
+
+-------------------------------------------------------------------------------
+Training data of the model weights
+-------------------------------------------------------------------------------
+
+The weights were trained on the following public datasets. We thank their
+authors; please cite them when you use the models.
+
+  Mena-LAM-s (mena-lam5-v1.pt): OMol25, OMC25, OMat24, sAlex, MPtrj, MatPES,
+    OC20, OC22, OpenRxn26, SPICE 2
+  Mena-LAM-preview (mena-lam-400k.pt): OMat24, sAlex, MPtrj, MatPES, OMol25

@@ -1,0 +1,65 @@
+"""lam.data: Data loading, pre-allocated collation, bucket management, multi-dataset sampling, and LoT registry."""
+
+from lam.data.omol_buckets import DEFAULT_EDGES, OmolBuckets, OmolFlat, batch_sizes_for, ref_from_json, ref_to_json
+from lam.data.prefetch import (
+    CrystalPartStream,
+    MultiCrystalStream,
+    Prefetch,
+    ResidentCrystalStream,
+    pack,
+    pack_with_pairs,
+    to_dev,
+)
+from lam.data.registry import (
+    ID_TO_LOT_NAME,
+    LOT_ID_TO_NAME,
+    LOT_NAMES,
+    LOT_NAME_TO_ID,
+    LOT_TO_ID,
+    REGISTRY_PATH,
+    get_dataset_entry,
+    get_lot_entry,
+    load_all_lot_e0_tables_f64,
+    load_lot_e0_table_f64,
+    load_lot_registry,
+    resolve_lot_id_by_u,
+)
+from lam.data.sampler import DEFAULT_CRYSTAL_FLOORS, DatasetSpec, MultiDatasetSampler, MultiLoTSampler
+from lam.data.shards import MatFlat, collate, collate_legacy, compute_u_flag, voigt_from_3x3
+
+__all__ = [
+    "CrystalPartStream",
+    "DEFAULT_CRYSTAL_FLOORS",
+    "DEFAULT_EDGES",
+    "DatasetSpec",
+    "ID_TO_LOT_NAME",
+    "LOT_ID_TO_NAME",
+    "LOT_NAMES",
+    "LOT_NAME_TO_ID",
+    "LOT_TO_ID",
+    "MatFlat",
+    "MultiCrystalStream",
+    "MultiDatasetSampler",
+    "MultiLoTSampler",
+    "OmolBuckets",
+    "OmolFlat",
+    "Prefetch",
+    "REGISTRY_PATH",
+    "ResidentCrystalStream",
+    "batch_sizes_for",
+    "collate",
+    "collate_legacy",
+    "compute_u_flag",
+    "get_dataset_entry",
+    "get_lot_entry",
+    "load_all_lot_e0_tables_f64",
+    "load_lot_e0_table_f64",
+    "load_lot_registry",
+    "pack",
+    "pack_with_pairs",
+    "ref_from_json",
+    "ref_to_json",
+    "resolve_lot_id_by_u",
+    "to_dev",
+    "voigt_from_3x3",
+]

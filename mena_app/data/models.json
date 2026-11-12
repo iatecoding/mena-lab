@@ -1,0 +1,84 @@
+{
+ "models": [
+  {
+   "id": "lam5-v1",
+   "title": "Mena-LAM-s",
+   "file": "mena-lam5-v1.pt",
+   "size_mb": 34.8,
+   "sha256": "cc229d271ecadf029e32135168bbff4b19db9e5406d995104502084a027b2698",
+   "urls": [
+    "https://github.com/iatecoding/mena-lab/releases/download/v0.1.0/mena-lam5-v1.pt",
+    "https://huggingface.co/iatecoding/Mena-LAM-s/resolve/main/mena-lam5-v1.pt"
+   ],
+   "license": "CC-BY-4.0",
+   "backend": "lam4",
+   "domains": [
+    "molecule",
+    "crystal",
+    "slab"
+   ],
+   "rank": {
+    "molecule": 0,
+    "crystal": 1,
+    "slab": 1
+   },
+   "params_m": 8.67,
+   "lots": [
+    "mp_pbe",
+    "mp_pbeU",
+    "matpes_r2scan",
+    "oc20_rpbe",
+    "oc22_pbeU",
+    "omc25_pbe",
+    "omol_wb97mv"
+   ],
+   "dtypes": [
+    "float32",
+    "float64"
+   ],
+   "low_memory": true,
+   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OC22, OMC25, OpenRxn, SPICE",
+   "metrics": "Molecules (OMol25 held-out): energy 1.64, forces 0.34 kcal/mol/Å; PLF547 protein–ligand 0.297 kcal/mol"
+  },
+  {
+   "id": "lam-400k",
+   "title": "Mena-LAM-preview",
+   "file": "mena-lam-400k.pt",
+   "size_mb": 25.6,
+   "sha256": "75454aea3acc62774769531aef9b48282a74b334888aaab6e2613f1c1cc276cb",
+   "urls": [
+    "https://github.com/iatecoding/mena-lab/releases/download/v0.1.0/mena-lam-400k.pt",
+    "https://huggingface.co/iatecoding/Mena-LAM-preview/resolve/main/mena-lam-400k.pt"
+   ],
+   "license": "CC-BY-4.0",
+   "backend": "lam",
+   "domains": [
+    "crystal",
+    "slab",
+    "molecule"
+   ],
+   "rank": {
+    "crystal": 0,
+    "slab": 0,
+    "molecule": 3
+   },
+   "params_m": 6.37,
+   "lots": [
+    "mp_pbe",
+    "mp_pbeU",
+    "omat_pbe",
+    "omat_pbeU",
+    "matpes_pbe",
+    "matpes_r2scan",
+    "omol_wb97mv"
+   ],
+   "dtypes": [
+    "float32",
+    "float64"
+   ],
+   "low_memory": true,
+   "training": "MPtrj, sAlex, OMat24, MatPES, OMol25",
+   "metrics": "Matbench Discovery: F1 0.905, CPS 0.849, κSRME 0.307. Molecules: energy 5.49, forces 0.83 kcal/mol/Å"
+  }
+ ]
+}

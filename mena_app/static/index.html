@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mena</title>
+<meta name="description" content="Run Mena machine-learned interatomic potentials on your own computer.">
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/layout.css">
+<link rel="stylesheet" href="/static/css/results.css">
+<link rel="stylesheet" href="/static/css/perf.css">
+<script>
+  // Apply a saved theme before first paint (no flash). Stored as JSON by util.store().
+  try { var t = JSON.parse(localStorage.getItem('mena-theme')); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="6.5" fill="var(--accent)"/>
+      <line x1="8.5" y1="20.5" x2="23.5" y2="20.5" stroke="#ffffff" stroke-width="1.6" stroke-opacity="0.5" stroke-linecap="round"/>
+      <path d="M8.5 20.5 L16.5 9.5 L23.5 20.5" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="16.5" cy="9.5" r="4.2" fill="#ffffff"/>
+      <circle cx="8.5" cy="20.5" r="3.6" fill="#ffffff"/>
+      <circle cx="23.5" cy="20.5" r="3.8" fill="#ffffff"/>
+    </svg>
+    <span class="brand-name">Mena</span><span class="brand-ver num" id="version"></span>
+  </div>
+  <nav class="tabs seg" role="tablist" aria-label="Views">
+    <button type="button" role="tab" data-view="workspace" aria-selected="true">Workspace</button>
+    <button type="button" role="tab" data-view="history" aria-selected="false">History</button>
+    <button type="button" role="tab" data-view="performance" aria-selected="false">Performance</button>
+  </nav>
+  <div class="top-right">
+    <span class="pill" id="dev-pill">…</span>
+    <span class="pill num" id="mem-pill">…</span>
+    <button type="button" class="btn ghost small" id="settings-btn">Settings</button>
+    <button type="button" class="btn ghost small" id="theme-btn">Dark</button>
+  </div>
+</header>
+<main id="main" tabindex="-1">
+  <p id="boot" class="boot">Loading…</p>
+  <div id="view-workspace" hidden>
+    <div id="workspace" class="workspace">
+      <aside class="sidebar" aria-label="Setup and run">
+        <div class="sidebar-scroll">
+          <section id="structure-col" class="panel" aria-label="Structure"></section>
+          <section class="panel calc-panel" aria-label="Calculation">
+            <h2 class="panel-title">2 · Calculation</h2>
+            <nav id="task-strip" class="task-grid" role="radiogroup" aria-label="Task"></nav>
+            <p id="task-desc" class="task-desc"></p>
+            <div id="task-form" class="task-form"></div>
+          </section>
+        </div>
+        <div class="run-dock">
+          <div id="dock-drawer" class="dock-drawer" hidden>
+            <div class="drawer-head">
+              <span id="drawer-title" class="panel-title" style="margin:0"></span>
+              <button type="button" id="drawer-close" class="btn ghost small" aria-label="Close panel">Done</button>
+            </div>
+            <div id="plan-why" class="plan-why" hidden></div>
+            <div id="runtime-opts" class="runtime" hidden></div>
+            <div id="repro" class="repro-box" hidden></div>
+          </div>
+          <div id="plan-card" class="plan-compact"></div>
+          <div id="run-actions" class="run-actions"></div>
+        </div>
+      </aside>
+      <section id="centre" class="stage-pane" aria-label="Viewer and results">
+        <div id="struct-bar" class="struct-bar"></div>
+        <section id="run-panel" class="panel run-panel" hidden aria-label="Progress"></section>
+        <section id="result-top" class="panel result-top" hidden aria-label="Result summary"></section>
+        <div class="stage">
+          <div id="viewer-host" class="stage-viewer"></div>
+          <div id="stage-charts" class="stage-charts" hidden aria-label="Charts"></div>
+        </div>
+        <section id="result-panel" class="panel result-details" hidden aria-label="Result tables"></section>
+      </section>
+    </div>
+  </div>
+  <section id="view-history" class="history" hidden aria-label="History"></section>
+  <section id="view-performance" class="perf" hidden aria-label="Performance"></section>
+</main>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script type="module" src="/static/js/main.js"></script>
+<noscript><p style="padding:2rem">Mena needs JavaScript enabled in the browser.</p></noscript>
+</body>
+</html>

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[co]
+*.egg-info/
+build/
+dist/
+.venv*/
+.pytest_cache/
+.DS_Store
+mena_runs/
+weights/
+*.pt

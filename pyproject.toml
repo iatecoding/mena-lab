@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mena-lab"
+version = "0.1.0"
+description = "Run Mena machine-learned interatomic potentials from a command line or a local web page."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "LICENSE-WEIGHTS", "NOTICE"]
+# Required: only what a run cannot do without. The web server is the Python standard library; the page loads nothing from the internet.
+dependencies = [
+  "torch>=2.2",
+  "numpy>=1.24",
+  "ase>=3.23",
+  "vesin>=0.3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+mena = "mena_app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mena_app*", "lam*", "lam4*"]
+
+[tool.setuptools.package-data]
+mena_app = ["static/**/*", "examples/*", "data/*.json"]
+lam = ["data/*.yaml", "data/e0_refs/*", "eval/*.yml", "models/params/*.npz"]
+lam4 = ["physics/data/*.npy"]

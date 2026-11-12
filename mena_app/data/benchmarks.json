@@ -1,0 +1,925 @@
+{
+ "architecture_status": {
+  "title": "Which model runs your structure",
+  "molecules": {
+   "status": "active",
+   "badge": "Default for molecules · Mena-LAM-s (lam5-v1)",
+   "title": "Molecules: Mena-LAM-s (lam5-v1)",
+   "body": "Molecules run on Mena-LAM-s by default (35 MB, loads in about 60 ms). Besides energies and forces it predicts partial charges, the dipole and the polarizability, which give IR & Raman spectra, and includes D3(BJ) dispersion. Fused GPU kernels and a low-memory CPU mode run biomolecules of thousands of atoms on a laptop."
+  },
+  "materials": {
+   "status": "preview",
+   "badge": "Default for crystals and surfaces",
+   "title": "Periodic materials: Mena-LAM-preview (lam-400k)",
+   "body": "Crystals and surfaces use Mena-LAM-preview (lam-400k) by default: Matbench Discovery F1 0.905, CPS 0.849, DynaMat MD CMDS 0.787. Mena-LAM-s can also be chosen for crystals in Settings; on an Apple M3 Max laptop it runs 44,670 atoms/s at 8,192 silicon atoms and fits 65,536 atoms in 5.80 GB."
+  }
+ },
+ "molecules_lam5": {
+  "headline": [
+   {
+    "value": "0.297",
+    "unit": "kcal/mol",
+    "badge": "PLF547 · CCSD(T) reference",
+    "label": "Protein–ligand interaction MAE",
+    "sub": "Ahead of MACE-POLAR-1-L (0.37), UMA-M-1.1 (0.82) and MACE-OMOL (1.08) on ML-PEG"
+   },
+   {
+    "value": "11,727",
+    "unit": "atoms/s",
+    "badge": "M3 Max GPU · 8,192 atoms",
+    "label": "Biomolecule scaling on a laptop GPU",
+    "sub": "4.89 GB at 8,192 atoms, where plain PyTorch runs out of memory (>38.1 GB); 13,210 atoms/s and 0.48 GB at 1,024 atoms"
+   },
+   {
+    "value": "0.16",
+    "unit": "MB/atom",
+    "badge": "CPU low-memory mode",
+    "label": "CPU low-memory scaling",
+    "sub": "3,000 atoms in +0.47 GB net (0.84 GB RSS); 8,193 atoms in +1.31 GB net (1.68 GB RSS); 15–45 ms drug SP"
+   },
+   {
+    "value": "30.1×",
+    "unit": "faster",
+    "badge": "GPU relax_batch & IR/Raman",
+    "label": "Batched conformer relaxation",
+    "sub": "24× L-BFGS in 2.45 s (9.80 relax/s) vs. 73.60 s serial ASE; Caffeine 144-disp IR + Raman in 0.508 s"
+   }
+  ],
+  "plf547": {
+   "title": "PLF547 protein–ligand interaction error vs. CCSD(T)",
+   "badge": "CCSD(T) reference",
+   "rows": [
+    {
+     "name": "Mena-LAM-s (lam5-v1)",
+     "mae": 0.297,
+     "mena": true,
+     "detail": "0.2966 kcal/mol (12.86 meV, R² = 0.9995), 8.67M active params"
+    },
+    {
+     "name": "MACE-POLAR-1-L",
+     "mae": 0.37,
+     "mena": false,
+     "detail": "0.37 kcal/mol (ML-PEG)"
+    },
+    {
+     "name": "MACE-POLAR-1-M",
+     "mae": 0.47,
+     "mena": false,
+     "detail": "0.47 kcal/mol (ML-PEG)"
+    },
+    {
+     "name": "UMA-M-1.1",
+     "mae": 0.82,
+     "mena": false,
+     "detail": "0.82 kcal/mol (FAIRChem)"
+    },
+    {
+     "name": "UMA-S-1.1",
+     "mae": 0.9,
+     "mena": false,
+     "detail": "0.90 kcal/mol (FAIRChem)"
+    },
+    {
+     "name": "MACE-OMOL",
+     "mae": 1.08,
+     "mena": false,
+     "detail": "1.08 kcal/mol"
+    },
+    {
+     "name": "ORB-v3-D3",
+     "mae": 1.83,
+     "mena": false,
+     "detail": "1.83 kcal/mol"
+    }
+   ],
+   "note": "Lower is better. Mena-LAM-s combines learned partial charges, damped Coulomb and C6 dispersion.",
+   "source": "PLF547 benchmark (547 protein–ligand complexes vs. gold-standard CCSD(T))."
+  },
+  "tier2_scaling": {
+   "title": "Molecular scaling on an Apple M3 Max (36 GB): fused GPU kernels vs. plain PyTorch",
+   "badge": "Up to 6.5× faster · 7.4× lower RAM",
+   "columns": [
+    "System",
+    "Atoms",
+    "PyTorch (ms)",
+    "Fused (ms)",
+    "Fused atoms/s",
+    "Speedup",
+    "PyTorch RAM",
+    "Fused RAM"
+   ],
+   "rows": [
+    {
+     "system": "Caffeine (drug)",
+     "n": 24,
+     "t1_ms": 33.6,
+     "t2_ms": 28.8,
+     "atoms_per_s": 833,
+     "speedup": "1.17×",
+     "t1_gb": "0.17 GB",
+     "t2_gb": "0.17 GB"
+    },
+    {
+     "system": "(H₂O)₃₂ cluster",
+     "n": 96,
+     "t1_ms": 46.0,
+     "t2_ms": 29.8,
+     "atoms_per_s": 3227,
+     "speedup": "1.55×",
+     "t1_gb": "0.19 GB",
+     "t2_gb": "0.18 GB"
+    },
+    {
+     "system": "Binding pocket",
+     "n": 288,
+     "t1_ms": 88.7,
+     "t2_ms": 35.9,
+     "atoms_per_s": 8022,
+     "speedup": "2.47×",
+     "t1_gb": "1.41 GB",
+     "t2_gb": "0.24 GB"
+    },
+    {
+     "system": "Solvated protein",
+     "n": 1024,
+     "t1_ms": 299.1,
+     "t2_ms": 77.5,
+     "atoms_per_s": 13210,
+     "speedup": "3.86×",
+     "t1_gb": "3.58 GB",
+     "t2_gb": "0.48 GB (0.25 low-mem)"
+    },
+    {
+     "system": "Biomolecule",
+     "n": 2048,
+     "t1_ms": 756.3,
+     "t2_ms": 160.9,
+     "atoms_per_s": 12732,
+     "speedup": "4.70×",
+     "t1_gb": "7.16 GB",
+     "t2_gb": "1.61 GB"
+    },
+    {
+     "system": "Biomolecule",
+     "n": 4096,
+     "t1_ms": 2146.6,
+     "t2_ms": 328.1,
+     "atoms_per_s": 12484,
+     "speedup": "6.54×",
+     "t1_gb": "11.78 GB",
+     "t2_gb": "3.02 GB"
+    },
+    {
+     "system": "Large protein",
+     "n": 8192,
+     "t1_ms": null,
+     "t2_ms": 698.6,
+     "atoms_per_s": 11727,
+     "speedup": "OOM → runs",
+     "t1_gb": ">38.1 GB (OOM)",
+     "t2_gb": "4.89 GB (2.22 low-mem)"
+    },
+    {
+     "system": "Mega biomolecule (isolated)",
+     "n": 16384,
+     "t1_ms": null,
+     "t2_ms": 1448.7,
+     "atoms_per_s": 11309,
+     "speedup": "OOM → runs",
+     "t1_gb": "OOM",
+     "t2_gb": "5.30 GB (3.21 low-mem)"
+    }
+   ],
+   "note": "The fused path runs message passing, exact Coulomb and D3 dispersion as Metal GPU kernels with constant extra memory. At 8,192 atoms plain PyTorch runs out of memory (>38.1 GB), while the fused path runs at 11,727 atoms/s in 4.89 GB (2.22 GB in low-memory mode).",
+   "source": "Measured on an Apple M3 Max (36 GB)."
+  },
+  "cpu_and_workflows": {
+   "title": "CPU low-memory mode (0.16 MB/atom) and batched GPU workflows",
+   "badge": "Apple M3 Max CPU & GPU",
+   "facts": {
+    "CPU drug single-point": "17.1–39.2 ms (~15–45 ms: H₂O 17.1 ms, caffeine 29.4 ms, ibuprofen 39.2 ms)",
+    "CPU low-memory mode (3,000 atoms)": "+0.47 GB net / 0.84 GB total (0.16 MB/atom)",
+    "CPU low-memory mode (8,193 atoms)": "+1.31 GB net / 1.68 GB total (0.16 MB/atom)",
+    "GPU eval_batch (64× drugs, N=18–92)": "329.4 structs/s on M3 Max GPU (4.44× faster than plain PyTorch, 74.3)",
+    "GPU eval_batch (32× pockets, N=200–310)": "64.3 structs/s in 0.74 GB (6.77× faster, 4.9× lower RAM)",
+    "GPU relax_batch (24× L-BFGS, 35 steps)": "2.45 s = 9.80 relax/s (30.05× faster than 73.60 s serial ASE)",
+    "Caffeine Hessian + IR + Raman": "0.508 s for 144 displacements (3.53 ms/disp, 10.86× faster than 5.52 s CPU serial)",
+    "FAIRChem OMol25 full runs on M3 Max": "GEOM Conformers (8,245 relax) in 29.3 min (beats Cloud A100 31.2 min); Ligand Strain in 38.1 min (vs. 49.0 min A100)"
+   },
+   "source": "Measured on an Apple M3 Max (36 GB)."
+  },
+  "accuracy_and_spectroscopy": {
+   "title": "Molecular accuracy, electrostatics & spectroscopy highlights (Mena-LAM-s)",
+   "badge": "CCSD(T) & ωB97M-V benchmarks",
+   "facts": {
+    "PLF547 protein–ligand (CCSD(T))": "0.297 kcal/mol MAE (12.86 meV, R² = 0.9995)",
+    "TorsionNet500 (DLPNO-CCSD(T)/CBS)": "0.205 kcal/mol barrier MAE (R² = 0.9802; 12,000 pts in 10.8 s = 1,111 structs/s)",
+    "Folmsbee 44 conformer sets": "0.252 kcal/mol MAE (neutral 0.251, charged 0.269; matches B3LYP/def2-TZVP 0.251)",
+    "Wiggle150 strained conformers": "1.066 kcal/mol MAE (R² = 0.9971; ahead of ωB97M-D3BJ/QZVP 1.18 & AIMNet2 2.35)",
+    "GMTKN55 v2 (Rowan-20 main-group)": "WTMAD-2 = 4.78 (ahead of B3LYP-D3BJ/QZVP 6.53 and AIMNet2 13.26)",
+    "OMol25 S2EF val_sub5k & Biomolecules": "1.640 kcal/mol E / 0.340 kcal/mol/Å F; Val-Comp Biomolecules 53.87 meV (UMA-M-1.1: 58.65)",
+    "Dipole & polarizability (def2-TZVPD)": "Neutral dipole r = 0.9997 (MAE 0.009 e·Å); α_iso scaling r = 0.9955; Raman anisotropy γ r = 0.967",
+    "QVib 1,366 conformers & IR spectra": "Freq MAE 5.58 cm⁻¹ vs. PBE0+MBD (4.43 vs. ωB97M-V); IR cosine 0.8761 (matches MACE-POLAR-1 0.8765); Born charges r = 0.9993"
+   },
+   "source": "PLF547, TorsionNet500, Folmsbee, Wiggle150, GMTKN55, OMol25 validation and QVib benchmarks."
+  }
+ },
+ "hardware_banner": {
+  "title": "A100 & Apple M3 Max laptop vs. H100 / H200 / Blackwell / H20 data-center GPUs",
+  "dynamat": "On the official Matbench Discovery DynaMat v1.0 MD benchmark, Mena-LAM-preview ran on 1× NVIDIA A100 (40 GB, 1.56 TB/s bandwidth) at 24.7 atoms/ms (2.37 h total), while 44 of 45 competing models ran on newer H100, H200, or RTX PRO 6000 Blackwell GPUs (38 on H200 at 4.80 TB/s, 3 on H100 at 3.35 TB/s, 3 on Blackwell 96 GB). Despite running on A100, Mena-LAM-preview finished in 2.37 h (ORB v2 MPA on H200: 2.61 h; DPA-4.1-Air-OAM: 3.52 h) with 0.72 GB peak memory (DPA-4.1-Air-OAM: 1.33 GB; DPA-4.1-Max-OAM-PFT: 22.3 GB) and CMDS 0.787.",
+  "diamond": "On memory per atom (0.66 MB/atom on A100, 0.82 MB/atom on M3 Max, 0.33 MB/atom in low-memory mode), Mena-LAM-preview uses 8×–22× less memory than Meta's UMA-S 1.2.1 Nitro (6.5–9.5 MB/atom standard, ~18.5 MB/atom on 158-nbr diamond, hard-capped at 15,000 atoms on H200) and 9.5× less than DPA-4.1-Air-OAM (7.79 MB/atom on diamond). Even on an Apple M3 Max laptop (36 GB, 300 GB/s — 13.3× lower bandwidth than H20), Mena-LAM-preview reaches 14,480 atoms/s (14.48 atoms/ms) on 158-nbr/atom diamond and 21,700 atoms/s on CsSnI₃."
+ },
+ "headline": [
+  {
+   "value": "0.72",
+   "unit": "GB",
+   "badge": "1× A100 vs H200/Blackwell",
+   "label": "Peak memory, DynaMat MD",
+   "sub": "Next lowest reported: 1.33 GB (DPA-4.1-Air-OAM on RTX PRO 6000)"
+  },
+  {
+   "value": "2.37",
+   "unit": "h",
+   "badge": "24.7 atoms/ms on 1× A100",
+   "label": "DynaMat MD wall time",
+   "sub": "On an A100; ORB v2 MPA 2.61 h on H200, DPA-4.1-Air-OAM 3.52 h"
+  },
+  {
+   "value": "0.787",
+   "unit": "",
+   "badge": "DynaMat v1.0",
+   "label": "DynaMat CMDS & 0.849 CPS",
+   "sub": "DPA-4.1-Air-OAM: 0.776; CPS 0.849 after 30 GPU-hours of training"
+  },
+  {
+   "value": "14,480",
+   "unit": "atoms/s",
+   "badge": "M3 Max vs H20 96GB",
+   "label": "Dense diamond (158 nbr/atom)",
+   "sub": "14.5 atoms/ms compiled (2.96 eager) & 0.82 MB/atom on M3 Max; 21.7 atoms/ms eager on CsSnI₃ (19 nbr/atom)"
+  }
+ ],
+ "dynamat": {
+  "title": "Peak GPU memory in DynaMat MD (Mena-LAM-preview on A100 vs. H100/H200/Blackwell)",
+  "rows": [
+   {
+    "name": "Mena-LAM-preview",
+    "mem_gb": 0.716,
+    "hours": 2.366,
+    "cmds": 0.7869,
+    "gpu": "A100",
+    "cps": 0.8491,
+    "mena": true
+   },
+   {
+    "name": "DPA-4.1-Air-OAM",
+    "mem_gb": 1.33,
+    "hours": 3.518,
+    "cmds": 0.7758,
+    "gpu": "RTX PRO 6000",
+    "cps": 0.8946,
+    "mena": false
+   },
+   {
+    "name": "GRACE-2L-OAM-L",
+    "mem_gb": null,
+    "hours": 5.124,
+    "cmds": 0.7587,
+    "gpu": "H200",
+    "cps": 0.8651,
+    "mena": false
+   },
+   {
+    "name": "GRACE-2L-OAM",
+    "mem_gb": null,
+    "hours": 3.878,
+    "cmds": 0.7515,
+    "gpu": "H200",
+    "cps": 0.8367,
+    "mena": false
+   },
+   {
+    "name": "ORB v2 MPA",
+    "mem_gb": null,
+    "hours": 2.606,
+    "cmds": 0.7502,
+    "gpu": "H200",
+    "cps": 0.5284,
+    "mena": false
+   },
+   {
+    "name": "GRACE-1L-OAM",
+    "mem_gb": null,
+    "hours": 3.238,
+    "cmds": 0.7492,
+    "gpu": "H200",
+    "cps": 0.7606,
+    "mena": false
+   },
+   {
+    "name": "GRACE-3L-OAM-L",
+    "mem_gb": null,
+    "hours": 7.548,
+    "cmds": 0.7389,
+    "gpu": "H200",
+    "cps": 0.8999,
+    "mena": false
+   },
+   {
+    "name": "ORB v3",
+    "mem_gb": 1.608,
+    "hours": 4.692,
+    "cmds": 0.7363,
+    "gpu": "H200",
+    "cps": 0.8605,
+    "mena": false
+   },
+   {
+    "name": "TACE-OAM-L",
+    "mem_gb": 4.391,
+    "hours": 9.341,
+    "cmds": 0.7278,
+    "gpu": "H200",
+    "cps": 0.8894,
+    "mena": false
+   },
+   {
+    "name": "ORB v2 MPtrj",
+    "mem_gb": null,
+    "hours": 2.623,
+    "cmds": 0.727,
+    "gpu": "H200",
+    "cps": 0.4703,
+    "mena": false
+   },
+   {
+    "name": "GRACE-2L-MPtrj",
+    "mem_gb": null,
+    "hours": 4.115,
+    "cmds": 0.6979,
+    "gpu": "H200",
+    "cps": 0.6806,
+    "mena": false
+   },
+   {
+    "name": "EquFlash",
+    "mem_gb": 6.219,
+    "hours": 18.273,
+    "cmds": 0.6777,
+    "gpu": "H100",
+    "cps": 0.8877,
+    "mena": false
+   },
+   {
+    "name": "Nequip-OAM-L",
+    "mem_gb": null,
+    "hours": 18.076,
+    "cmds": 0.6697,
+    "gpu": "H200",
+    "cps": 0.8702,
+    "mena": false
+   },
+   {
+    "name": "MACE-MPA-0",
+    "mem_gb": null,
+    "hours": 8.83,
+    "cmds": 0.6591,
+    "gpu": "H200",
+    "cps": 0.7948,
+    "mena": false
+   },
+   {
+    "name": "MatterSim v1 5M",
+    "mem_gb": null,
+    "hours": 9.363,
+    "cmds": 0.6585,
+    "gpu": "H200",
+    "cps": 0.7672,
+    "mena": false
+   },
+   {
+    "name": "HIENet",
+    "mem_gb": null,
+    "hours": 22.953,
+    "cmds": 0.653,
+    "gpu": "H200",
+    "cps": 0.707,
+    "mena": false
+   },
+   {
+    "name": "AlphaNet-v1-OAM",
+    "mem_gb": null,
+    "hours": 9.375,
+    "cmds": 0.6527,
+    "gpu": "H200",
+    "cps": 0.7689,
+    "mena": false
+   },
+   {
+    "name": "EquFlashV2",
+    "mem_gb": 14.384,
+    "hours": 39.326,
+    "cmds": 0.6507,
+    "gpu": "H100",
+    "cps": 0.9072,
+    "mena": false
+   },
+   {
+    "name": "SevenNet-l3i5",
+    "mem_gb": null,
+    "hours": 15.1,
+    "cmds": 0.6505,
+    "gpu": "H200",
+    "cps": 0.7136,
+    "mena": false
+   },
+   {
+    "name": "DPA-3.1-3M-FT",
+    "mem_gb": null,
+    "hours": 25.866,
+    "cmds": 0.6468,
+    "gpu": "H200",
+    "cps": 0.8019,
+    "mena": false
+   },
+   {
+    "name": "Eqnorm MPtrj",
+    "mem_gb": null,
+    "hours": 17.011,
+    "cmds": 0.6385,
+    "gpu": "H200",
+    "cps": 0.7556,
+    "mena": false
+   },
+   {
+    "name": "EquiformerV3+DeNS-OAM",
+    "mem_gb": 39.208,
+    "hours": 48.318,
+    "cmds": 0.6382,
+    "gpu": "H200",
+    "cps": 0.9023,
+    "mena": false
+   },
+   {
+    "name": "PET-OAM-XL",
+    "mem_gb": null,
+    "hours": 41.296,
+    "cmds": 0.6338,
+    "gpu": "H200",
+    "cps": 0.8984,
+    "mena": false
+   },
+   {
+    "name": "MACE-MP-0",
+    "mem_gb": null,
+    "hours": 8.166,
+    "cmds": 0.6333,
+    "gpu": "H200",
+    "cps": 0.637,
+    "mena": false
+   },
+   {
+    "name": "TECE-OAM-RRA-1.0",
+    "mem_gb": 19.209,
+    "hours": 52.221,
+    "cmds": 0.6298,
+    "gpu": "H200",
+    "cps": 0.9076,
+    "mena": false
+   },
+   {
+    "name": "Nequip-MP-L",
+    "mem_gb": null,
+    "hours": 18.113,
+    "cmds": 0.6293,
+    "gpu": "H200",
+    "cps": 0.7303,
+    "mena": false
+   },
+   {
+    "name": "SevenNet-Omni-i12",
+    "mem_gb": null,
+    "hours": 49.514,
+    "cmds": 0.626,
+    "gpu": "H200",
+    "cps": 0.8735,
+    "mena": false
+   },
+   {
+    "name": "eSEN-30M-OAM",
+    "mem_gb": null,
+    "hours": 59.219,
+    "cmds": 0.6248,
+    "gpu": "H200",
+    "cps": 0.8879,
+    "mena": false
+   },
+   {
+    "name": "Nequip-OAM-XL",
+    "mem_gb": null,
+    "hours": 39.272,
+    "cmds": 0.6234,
+    "gpu": "H200",
+    "cps": 0.886,
+    "mena": false
+   },
+   {
+    "name": "EquiformerV3+DeNS-MP",
+    "mem_gb": 34.986,
+    "hours": 49.494,
+    "cmds": 0.6222,
+    "gpu": "H200",
+    "cps": 0.8297,
+    "mena": false
+   },
+   {
+    "name": "Nequix MP PFT",
+    "mem_gb": null,
+    "hours": 11.507,
+    "cmds": 0.6163,
+    "gpu": "H200",
+    "cps": 0.7549,
+    "mena": false
+   },
+   {
+    "name": "eqV2 S DeNS",
+    "mem_gb": null,
+    "hours": 25.884,
+    "cmds": 0.6146,
+    "gpu": "H200",
+    "cps": 0.5218,
+    "mena": false
+   },
+   {
+    "name": "DPA-4.1-Max-OAM-PFT",
+    "mem_gb": 22.277,
+    "hours": 61.274,
+    "cmds": 0.6099,
+    "gpu": "RTX PRO 6000",
+    "cps": 0.913,
+    "mena": false
+   },
+   {
+    "name": "BAM-MP-core",
+    "mem_gb": 13.974,
+    "hours": 22.266,
+    "cmds": 0.6068,
+    "gpu": "H200",
+    "cps": 0.5845,
+    "mena": false
+   },
+   {
+    "name": "DPA-4.1-Max-OAM",
+    "mem_gb": 22.588,
+    "hours": 82.914,
+    "cmds": 0.6039,
+    "gpu": "RTX PRO 6000",
+    "cps": 0.9103,
+    "mena": false
+   },
+   {
+    "name": "Nequix MP",
+    "mem_gb": null,
+    "hours": 11.476,
+    "cmds": 0.6031,
+    "gpu": "H200",
+    "cps": 0.7294,
+    "mena": false
+   },
+   {
+    "name": "Allegro-OAM-L",
+    "mem_gb": null,
+    "hours": 63.42,
+    "cmds": 0.6018,
+    "gpu": "H200",
+    "cps": 0.8404,
+    "mena": false
+   },
+   {
+    "name": "DPA-4.0.1-Pro-MPtrj",
+    "mem_gb": null,
+    "hours": 73.223,
+    "cmds": 0.5975,
+    "gpu": "H200",
+    "cps": 0.8404,
+    "mena": false
+   },
+   {
+    "name": "eqV2 M",
+    "mem_gb": null,
+    "hours": 42.004,
+    "cmds": 0.595,
+    "gpu": "H200",
+    "cps": 0.5583,
+    "mena": false
+   },
+   {
+    "name": "M3GNet",
+    "mem_gb": null,
+    "hours": 5.421,
+    "cmds": 0.5933,
+    "gpu": "H100",
+    "cps": 0.4282,
+    "mena": false
+   },
+   {
+    "name": "eSEN-30M-MP",
+    "mem_gb": null,
+    "hours": 59.469,
+    "cmds": 0.5926,
+    "gpu": "H200",
+    "cps": 0.7974,
+    "mena": false
+   },
+   {
+    "name": "MatRIS-10M-MP",
+    "mem_gb": null,
+    "hours": 141.246,
+    "cmds": 0.5925,
+    "gpu": "H200",
+    "cps": 0.7779,
+    "mena": false
+   },
+   {
+    "name": "MatRIS-10M-OAM",
+    "mem_gb": null,
+    "hours": 142.071,
+    "cmds": 0.581,
+    "gpu": "H200",
+    "cps": 0.8768,
+    "mena": false
+   },
+   {
+    "name": "Prophet-OAME-MBD",
+    "mem_gb": 18.395,
+    "hours": 163.018,
+    "cmds": 0.5779,
+    "gpu": "A800",
+    "cps": 0.9116,
+    "mena": false
+   },
+   {
+    "name": "Allegro-MP-L",
+    "mem_gb": null,
+    "hours": 80.178,
+    "cmds": 0.5562,
+    "gpu": "H200",
+    "cps": 0.7203,
+    "mena": false
+   },
+   {
+    "name": "CHGNet",
+    "mem_gb": null,
+    "hours": 24.173,
+    "cmds": 0.5535,
+    "gpu": "H200",
+    "cps": 0.3999,
+    "mena": false
+   }
+  ],
+  "source": "Matbench Discovery DynaMat v1.0 leaderboard (17 crystals, 20 ps each = 210M atom-steps, incl. DPA-4.1 PR #404); peak VRAM on the 500-atom cell.",
+  "note": "Mena-LAM-preview ran on 1× A100 (40 GB, 1.56 TB/s, 24.7 atoms/ms); 44 of 45 competitors ran on H100/H200/RTX PRO 6000 Blackwell. Each bar and point shows the model's GPU."
+ },
+ "diamond": {
+  "title": "Memory per atom on dense diamond (158 neighbours/atom, 6 Å)",
+  "rows": [
+   {
+    "name": "Mena-LAM-preview",
+    "mb_per_atom": 0.82,
+    "atoms_per_ms": 14.48,
+    "atoms_per_s": 14480,
+    "cps": 0.8491,
+    "gpu": "M3 Max",
+    "hardware": "Apple M3 Max 36 GB laptop (300 GB/s, compiled; 0.66 MB/atom on A100, 0.33 MB/atom low-mem)",
+    "mena": true
+   },
+   {
+    "name": "DPA4-Nano",
+    "mb_per_atom": 0.99,
+    "atoms_per_ms": 153.0,
+    "atoms_per_s": 153000,
+    "cps": null,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "DPA4-Mini",
+    "mb_per_atom": 1.81,
+    "atoms_per_ms": 79.2,
+    "atoms_per_s": 79200,
+    "cps": 0.733,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "MACE-MP-0",
+    "mb_per_atom": 2.44,
+    "atoms_per_ms": 11.5,
+    "atoms_per_s": 11500,
+    "cps": 0.637,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "SevenNet-l3i5",
+    "mb_per_atom": 3.19,
+    "atoms_per_ms": 27.8,
+    "atoms_per_s": 27800,
+    "cps": 0.7136,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "ORB v2 MPtrj",
+    "mb_per_atom": 3.83,
+    "atoms_per_ms": 52.2,
+    "atoms_per_s": 52200,
+    "cps": 0.4703,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "Nequix MP PFT",
+    "mb_per_atom": 3.83,
+    "atoms_per_ms": 18.2,
+    "atoms_per_s": 18200,
+    "cps": 0.7549,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "DPA4-Neo",
+    "mb_per_atom": 4.71,
+    "atoms_per_ms": 28.0,
+    "atoms_per_s": 28000,
+    "cps": 0.782,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "DPA-4.1-Air-OAM",
+    "mb_per_atom": 7.79,
+    "atoms_per_ms": 11.6,
+    "atoms_per_s": 11600,
+    "cps": 0.8946,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB / RTX PRO 6000 Blackwell (dpa4-air preset)",
+    "mena": false
+   },
+   {
+    "name": "DPA4-Air",
+    "mb_per_atom": 7.79,
+    "atoms_per_ms": 11.6,
+    "atoms_per_s": 11600,
+    "cps": 0.816,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "UMA-S 1.2.1 (Nitro)",
+    "mb_per_atom": 8.0,
+    "atoms_per_ms": null,
+    "atoms_per_s": null,
+    "cps": null,
+    "gpu": "H200 141GB",
+    "hardware": "NVIDIA H200 141 GB (4,800 GB/s; 6.5–9.5 MB/atom standard, ~18.5 MB/atom at 158 nbr/at, 15k-atom cap)",
+    "mena": false
+   },
+   {
+    "name": "DPA4-Plus",
+    "mb_per_atom": 13.33,
+    "atoms_per_ms": 5.14,
+    "atoms_per_s": 5140,
+    "cps": 0.829,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "UMA-S 1.2.1 (Turbo)",
+    "mb_per_atom": 17.5,
+    "atoms_per_ms": null,
+    "atoms_per_s": null,
+    "cps": null,
+    "gpu": "H100 / H200",
+    "hardware": "NVIDIA H100 80 GB / H200 141 GB (torch.compile multigpu/turbo)",
+    "mena": false
+   },
+   {
+    "name": "Allegro-MP-L",
+    "mb_per_atom": 31.75,
+    "atoms_per_ms": 1.4,
+    "atoms_per_s": 1400,
+    "cps": 0.7203,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "Nequip-MP-L",
+    "mb_per_atom": 47.62,
+    "atoms_per_ms": 3.35,
+    "atoms_per_s": 3350,
+    "cps": 0.7303,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "DPA4-Pro",
+    "mb_per_atom": 50.0,
+    "atoms_per_ms": 1.36,
+    "atoms_per_s": 1360,
+    "cps": 0.842,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "DPA3-L16 (3.27M)",
+    "mb_per_atom": 84.96,
+    "atoms_per_ms": 1.43,
+    "atoms_per_s": 1430,
+    "cps": 0.8019,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "CHGNet",
+    "mb_per_atom": 96.0,
+    "atoms_per_ms": 0.37,
+    "atoms_per_s": 370,
+    "cps": 0.3999,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "DPA-3.1-MPtrj (L24)",
+    "mb_per_atom": 133.33,
+    "atoms_per_ms": 0.94,
+    "atoms_per_s": 940,
+    "cps": 0.718,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "MatRIS-10M-MP",
+    "mb_per_atom": 187.5,
+    "atoms_per_ms": 0.055,
+    "atoms_per_s": 55,
+    "cps": 0.7779,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   },
+   {
+    "name": "EquiformerV3+DeNS-MP",
+    "mb_per_atom": 333.33,
+    "atoms_per_ms": 0.43,
+    "atoms_per_s": 430,
+    "cps": 0.8297,
+    "gpu": "H20 96GB",
+    "hardware": "NVIDIA H20 96 GB server GPU (4,000 GB/s)",
+    "mena": false
+   }
+  ],
+  "source": "Other models: DPA4 paper (arXiv:2606.02419) Fig. 1c & Table S-17 on an NVIDIA H20 96 GB (4,000 GB/s). Mena-LAM-preview: measured on this Apple M3 Max laptop (36 GB, 300 GB/s) with the same 6 Å diamond structure and E+F+S protocol.",
+  "note": "Mena-LAM-preview ran on an Apple M3 Max laptop (300 GB/s); all 17 other models ran on an NVIDIA H20 96 GB server GPU (4,000 GB/s)."
+ },
+ "showcase": {
+  "title": "10,000-atom CsSnI₃ perovskite on an Apple M3 Max laptop",
+  "note": "20×20×5 CsSnI₃ (188,000 neighbour pairs), NVE with a 1050 K hotspot.",
+  "facts": {
+   "Atoms": "10,000",
+   "Speed (CsSnI₃ ladder)": "21.7 atoms/ms (21,700 atoms/s)",
+   "Speed (10k showcase)": "17.1 atoms/ms (584 ms/step)",
+   "Peak memory (10k)": "6.48 GB (0.66 MB/atom)",
+   "Low-memory mode (10k)": "3.23 GB, 12.9 atoms/ms",
+   "Energy drift": "0.0065 meV/atom"
+  }
+ },
+ "materials_tier2_preview": {
+  "title": "Mena-LAM-s on crystals: speed on an Apple M3 Max (36 GB)",
+  "badge": "44,670 atoms/s · 65,536 atoms in 5.80 GB",
+  "facts": {
+   "8,192-atom Silicon (E+F+Voigt Stress)": "44,670 atoms/s (183.4 ms/step) in 2.86 GB (1.25 GB in low-memory mode)",
+   "4,000-atom dense FCC Copper": "38,390 atoms/s (104.2 ms/step) in 1.62 GB",
+   "32,768-atom Silicon supercell": "32,390 atoms/s (1,011.6 ms/step) in 2.56 GB (33.5 KB/atom delta)",
+   "65,536-atom Silicon supercell": "27,950 atoms/s (2,344.5 ms/step) in 5.80 GB (4.69 GB eager)",
+   "PhononDB-103 thermal conductivity": "κ_SRME = 0.2992 with 0 / 103 imaginary-mode instabilities (spectrum_w1 = 0.2518)",
+   "MDR-442 & Diatomics physics": "MDR-442 force-constant error 0.0941 (−11.3% vs. lam-400k); Diatomics CDS = 0.6712 (+30.1%)"
+  },
+  "note": "Measured with Mena-LAM-s on crystals. Automatic uses Mena-LAM-preview (lam-400k) for crystals; pick Mena-LAM-s in Settings for these speeds."
+ }
+}
