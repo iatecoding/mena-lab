@@ -285,7 +285,7 @@ def test_lam5_vibrations_ir_and_raman_spectra(tmp_path: Path):
     assert "IR (km/mol)" in cols and "Raman (Å⁴/amu)" in cols
     assert "ir" in r["viewer"]["modes"][0] and "raman" in r["viewer"]["modes"][0]
 
-    freq_csv = (out_dir / "frequencies.csv").read_text()
+    freq_csv = (out_dir / "frequencies.csv").read_text(encoding="utf-8")
     assert "ir_km_mol" in freq_csv and "raman_A4_amu" in freq_csv
-    spec_csv = (out_dir / "ir_raman_spectrum.csv").read_text()
+    spec_csv = (out_dir / "ir_raman_spectrum.csv").read_text(encoding="utf-8")
     assert "wavenumber_cm-1,ir_km_mol,raman_A4_amu" in spec_csv

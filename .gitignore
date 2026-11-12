@@ -9,3 +9,4 @@ dist/
 mena_runs/
 weights/
 *.pt
+!lam/data/e0_refs/*.pt

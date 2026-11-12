@@ -38,7 +38,7 @@ def save_inputs(spec: dict, folder) -> tuple[str | None, str | None]:
             names.append(None)
             continue
         name = f"{stem}.{s['format']}"
-        (Path(folder) / name).write_text(s["text"], encoding="utf-8")
+        (Path(folder) / name).write_text(s["text"].replace("\r\n", "\n"), encoding="utf-8")
         names.append(name)
     return names[0], names[1]
 

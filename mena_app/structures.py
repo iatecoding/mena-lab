@@ -204,9 +204,10 @@ def read_text_any(p: Path) -> str:
     """Text of a file written by any editor: UTF-8 with or without a BOM (Windows Notepad), else Latin-1."""
     raw = p.read_bytes()
     try:
-        return raw.decode("utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return raw.decode("latin-1")
+        text = raw.decode("latin-1")
+    return text.replace("\r\n", "\n")
 
 
 def domain_of(a: Atoms) -> str:

@@ -207,6 +207,10 @@ def route(spec: dict, analysis: dict, devices: list[str], free_gb: float | None,
         if can_low and need is not None and free_gb and need > 0.5 * (free_gb - RESERVE_GB):
             low, need = True, costmodel.peak_gb(c, dtype, True)
             reasons["low_memory"] = "Turned on so the job fits in free memory. It costs about 15-30% more time and gives the same forces."
+        elif can_low and need is None and free_gb is not None and free_gb < RESERVE_GB + 1.0:
+            low = True
+            reasons["low_memory"] = ("Turned on because free memory is low and there are no memory measurements for this "
+                                     "computer yet (run 'mena calibrate').")
         elif can_low and need is None and device == "cpu" and n >= 1500:
             low = True
             reasons["low_memory"] = "Turned on automatically for large CPU systems (≥ 1,500 atoms) to keep memory around 0.16 MB/atom."

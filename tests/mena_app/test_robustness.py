@@ -217,3 +217,14 @@ def test_cancel_file_stops_the_worker_on_every_os(tmp_path):
     assert ctx.cancelled
     with pytest.raises(runtime.Cancelled):
         ctx.check()
+
+
+def test_windows_line_endings_are_not_doubled(tmp_path):
+    src = tmp_path / "crlf.xyz"
+    src.write_bytes(b"3\r\nw\r\nO 0 0 0\r\nH 0.96 0 0\r\nH -0.24 0.93 0\r\n")
+    spec = validation.validate({"task": "singlepoint", "structure": structures.from_path(str(src))})
+    assert "\r" not in spec["structure"]["text"]
+    run = tmp_path / "run"
+    run.mkdir()
+    export.save_inputs(spec, run)
+    assert b"\r\r" not in (run / "input.xyz").read_bytes() and len(structures.load(str(run / "input.xyz"))) == 3

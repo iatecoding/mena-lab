@@ -127,8 +127,9 @@ def test_runner_interrupt_kills_worker_and_throttles_memory_poll(tmp_path, monke
     assert len(spawned) == 1
     pid = spawned[0].pid
     assert spawned[0].poll() is not None
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    if sys.platform != "win32":  # on Windows os.kill(pid, 0) would terminate a process, not probe it
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
     # Verify memory polling runs at most once per 2.0 s across a ~0.7 s worker run
     mem_calls = 0
@@ -195,7 +196,7 @@ def test_sparse_edges_monotonic_costmodel_and_gpu_routing(monkeypatch, tmp_path)
         assert e_vesin == e_np > 0
 
     # calibration_m3max.json molecule x values match sparse count_edges and strictly increase across 3..1020 atoms
-    cal = json.loads((Path(structures.__file__).resolve().parent / "data" / "calibration_m3max.json").read_text())
+    cal = json.loads((Path(structures.__file__).resolve().parent / "data" / "calibration_m3max.json").read_text(encoding="utf-8"))
     expected_xs = [structures.count_edges(calibrate._water_box(w)) for w in calibrate.MOLECULE_WATERS]
     assert expected_xs == sorted(expected_xs) and len(set(expected_xs)) == len(expected_xs)
     for backend, dev in (("lam", "cpu"), ("lam", "mps"), ("lam4", "cpu"), ("lam4", "mps")):
@@ -603,5 +604,8 @@ def test_vibrations_near_linear_singlepoint_order_md_t0_cell_relax_models_and_sp
         si = structures.load("si")
         structures.analyze(si)
         phonon_symmetry.symmetry_plan(si, 2)
-    dep_warns = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    import lam, lam4, mena_app  # noqa: E401 - warnings raised inside third-party packages are not ours to fix
+    ours = [str(Path(m.__file__).resolve().parent) + os.sep for m in (lam, lam4, mena_app)]
+    dep_warns = [w for w in caught if issubclass(w.category, DeprecationWarning)
+                 and any(str(Path(w.filename).resolve()).startswith(o) for o in ours)]
     assert dep_warns == []

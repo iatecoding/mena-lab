@@ -70,9 +70,12 @@ def process_rss_bytes() -> int:
                 ]
 
             pmc = _PROCESS_MEMORY_COUNTERS(cb=ctypes.sizeof(_PROCESS_MEMORY_COUNTERS))
-            hproc = ctypes.windll.kernel32.GetCurrentProcess()
-            fn = getattr(ctypes.windll.kernel32, "K32GetProcessMemoryInfo", None) or ctypes.windll.psapi.GetProcessMemoryInfo
-            if fn(hproc, ctypes.byref(pmc), pmc.cb):
+            k32 = ctypes.windll.kernel32
+            k32.GetCurrentProcess.restype = ctypes.c_void_p  # a pseudo-handle: must not be truncated to a 32-bit int
+            fn = getattr(k32, "K32GetProcessMemoryInfo", None) or ctypes.windll.psapi.GetProcessMemoryInfo
+            fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PROCESS_MEMORY_COUNTERS), ctypes.c_ulong]
+            fn.restype = ctypes.c_int
+            if fn(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
                 return int(pmc.PeakWorkingSetSize)
         except Exception:
             pass

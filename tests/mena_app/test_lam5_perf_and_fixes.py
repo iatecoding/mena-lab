@@ -340,7 +340,7 @@ def test_export_smiles_cli_python_json_and_neb_slot2(tmp_path, monkeypatch):
             {"task": "singlepoint", "structure": {"format": "smiles", "text": smi, "name": "smiles"}, "system": {"charge": q_exp, "spin": 1}}
         )
         cli_line = export.to_cli(sp)
-        tokens = shlex.split(cli_line)
+        tokens = _split_cmdline(cli_line)
         assert tokens[0] == "mena" and tokens[1] == "singlepoint" and tokens[2] == f"smiles:{smi}"
         ns = cli.build_parser().parse_args(tokens[1:])
         rt_spec = cli.spec_from_args("singlepoint", ns)
@@ -429,6 +429,23 @@ def test_jobmanager_load_previous_preserves_analysis_and_cli_malformed_config(tm
         bad_cfg.write_text(json.dumps({"task": "singlepoint", "structure": bad_struct}), encoding="utf-8")
         rc = cli.main(["run", str(bad_cfg)])
         assert rc == 2
+
+
+def _split_cmdline(line: str) -> list[str]:
+    """Split a command line the way this system's shell does (CommandLineToArgvW on Windows, POSIX rules elsewhere)."""
+    if sys.platform != "win32":
+        return shlex.split(line)
+    import ctypes
+    from ctypes import wintypes
+
+    f = ctypes.windll.shell32.CommandLineToArgvW
+    f.argtypes, f.restype = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)], ctypes.POINTER(wintypes.LPWSTR)
+    n = ctypes.c_int()
+    argv = f(line, ctypes.byref(n))
+    try:
+        return [argv[i] for i in range(n.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
 
 
 def _have_lam5() -> bool:

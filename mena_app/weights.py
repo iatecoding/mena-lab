@@ -11,6 +11,8 @@ import hashlib
 import os
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -19,6 +21,9 @@ from mena_app import paths
 
 class DownloadError(RuntimeError):
     pass
+
+
+RETRIES = 3  # per mirror, for dropped connections
 
 
 def models_dir() -> Path:
@@ -79,19 +84,24 @@ def download(model: dict, quiet: bool = False) -> Path:
         print(f"Downloading {label} to {dest.parent}", file=sys.stderr, flush=True)
     errors = []
     for url in model["urls"]:
-        fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".part")
-        os.close(fd)
-        tmp_p = Path(tmp)
-        try:
-            _fetch(url, tmp_p, model["id"], quiet)
-            got = sha256(tmp_p)
-            if got != model["sha256"]:
-                raise DownloadError(f"file from {url} is damaged (hash mismatch)")
-            tmp_p.replace(dest)
-            return dest
-        except Exception as exc:  # noqa: BLE001 - try the next mirror
-            errors.append(f"{url}: {exc}")
-        finally:
-            if tmp_p.exists():
-                tmp_p.unlink()
+        for attempt in range(RETRIES):
+            fd, tmp = tempfile.mkstemp(dir=dest.parent, suffix=".part")
+            os.close(fd)
+            tmp_p = Path(tmp)
+            try:
+                _fetch(url, tmp_p, model["id"], quiet)
+                got = sha256(tmp_p)
+                if got != model["sha256"]:
+                    raise DownloadError(f"file from {url} is damaged (hash mismatch)")
+                tmp_p.replace(dest)
+                return dest
+            except Exception as exc:  # noqa: BLE001 - retry a dropped connection, else try the next mirror
+                errors.append(f"{url}: {exc}")
+                missing = isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403, 404)
+                if missing or attempt == RETRIES - 1:
+                    break
+                time.sleep(2 ** attempt)
+            finally:
+                if tmp_p.exists():
+                    tmp_p.unlink()
     raise DownloadError(f"could not download {model['id']}:\n  " + "\n  ".join(errors))

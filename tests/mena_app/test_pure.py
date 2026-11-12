@@ -102,7 +102,7 @@ def test_export_roundtrip_through_cli(tmp_path):
     job = tmp_path / "job.json"
     job.write_text(export.to_json(sp))
     ns = cli.build_parser().parse_args(["run", str(job)])
-    cfg = json.loads(job.read_text())
+    cfg = json.loads(job.read_text(encoding="utf-8"))
     assert cli.spec_from_args("relax", ns, cfg)["params"] == sp["params"]
 
 
@@ -110,11 +110,11 @@ def test_benchmark_visual_md_and_data():
     from mena_app import paths
     sp = spec("benchmark", "cssni3", mode="visual_md", max_atoms=500, steps=40, temperature_K=600.0)
     assert sp["params"]["mode"] == "visual_md" and sp["params"]["steps"] == 40
-    b = json.loads((paths.DATA_DIR / "benchmarks.json").read_text())
+    b = json.loads((paths.DATA_DIR / "benchmarks.json").read_text(encoding="utf-8"))
     assert "hardware_banner" in b and "dynamat" in b["hardware_banner"] and "diamond" in b["hardware_banner"]
     assert all("atoms_per_s" in r and "cps" in r for r in b["diamond"]["rows"])
-    icon = (paths.STATIC_DIR / "icon.svg").read_text()
-    html = (paths.STATIC_DIR / "index.html").read_text()
+    icon = (paths.STATIC_DIR / "icon.svg").read_text(encoding="utf-8")
+    html = (paths.STATIC_DIR / "index.html").read_text(encoding="utf-8")
     assert "<svg" in icon and 'href="/static/icon.svg"' in html
 
 

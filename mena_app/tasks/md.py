@@ -7,14 +7,14 @@ import time
 import numpy as np
 from ase import units
 from ase.md.langevin import Langevin
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
+from ase.md.velocitydistribution import Stationary, ZeroRotation
 from ase.md.verlet import VelocityVerlet
 
 from mena_app import report as R
 from mena_app import structures
 from mena_app.routing import md_repeat
 from mena_app.runtime import Cancelled, UserError
-from mena_app.tasks.common import setup, write_structure, write_trajectory
+from mena_app.tasks.common import setup, thermalize, write_structure, write_trajectory
 
 
 def _integrator(p, atoms):
@@ -47,7 +47,7 @@ def run(ctx):
         atoms.calc = calc
         ctx.log(f"cell repeated {r}×{r}×{r} to {len(atoms)} atoms")
     n = len(atoms)
-    MaxwellBoltzmannDistribution(atoms, temperature_K=p["temperature"], rng=np.random.default_rng(p["seed"]))
+    thermalize(atoms, temperature_K=p["temperature"], rng=np.random.default_rng(p["seed"]))
     Stationary(atoms)
     if not atoms.pbc.any():
         ZeroRotation(atoms)

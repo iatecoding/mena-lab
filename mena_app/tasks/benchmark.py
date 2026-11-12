@@ -13,13 +13,13 @@ import time
 import numpy as np
 from ase import Atoms, units
 from ase.constraints import FixConstraint
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
+from ase.md.velocitydistribution import Stationary, ZeroRotation
 from ase.md.verlet import VelocityVerlet
 
 from mena_app import backends, report as R
 from mena_app import runner, structures, system
 from mena_app.runtime import Cancelled, UserError
-from mena_app.tasks.common import prepare_atoms, write_trajectory
+from mena_app.tasks.common import prepare_atoms, thermalize, write_trajectory
 
 RESERVE_GB = 3.0
 MAX_VIS_ATOMS = 1800
@@ -175,12 +175,12 @@ def _run_visual_md(ctx, unit):
         outer_T = 220.0 if default_temp else max(80.0, pulse_temp * 0.65)
         core_T = 360.0 if default_temp else max(150.0, pulse_temp * 1.15)
         center = atoms.positions.mean(axis=0)
-        MaxwellBoltzmannDistribution(atoms, temperature_K=outer_T, rng=rng)
+        thermalize(atoms, temperature_K=outer_T, rng=rng)
         mol_coms = atoms.positions.reshape(-1, n0, 3).mean(axis=1)
         mol_dists = np.linalg.norm(mol_coms - center, axis=1)
         core_mask = np.repeat(mol_dists <= np.percentile(mol_dists, 25.0), n0)
         hot = atoms.copy()
-        MaxwellBoltzmannDistribution(hot, temperature_K=core_T, rng=rng)
+        thermalize(hot, temperature_K=core_T, rng=rng)
         mom = atoms.get_momenta()
         mom[core_mask] = hot.get_momenta()[core_mask]
         atoms.set_momenta(mom)
@@ -192,13 +192,13 @@ def _run_visual_md(ctx, unit):
     else:
         # Initialise a thermal hotspot in the central core (like the 10k CsSnI3 shockwave showcase)
         core_T = max(300.0, pulse_temp * 1.9)
-        MaxwellBoltzmannDistribution(atoms, temperature_K=max(100.0, pulse_temp * 0.4), rng=rng)
+        thermalize(atoms, temperature_K=max(100.0, pulse_temp * 0.4), rng=rng)
         center = atoms.cell.sum(axis=0) * 0.5
         dists = np.linalg.norm(atoms.positions - center, axis=1)
         core_cut = np.percentile(dists, 22.0)
         core_mask = dists <= core_cut
         hot = atoms.copy()
-        MaxwellBoltzmannDistribution(hot, temperature_K=core_T, rng=rng)
+        thermalize(hot, temperature_K=core_T, rng=rng)
         mom = atoms.get_momenta()
         mom[core_mask] = hot.get_momenta()[core_mask]
         atoms.set_momenta(mom)

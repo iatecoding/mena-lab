@@ -16,6 +16,16 @@ from mena_app.runtime import Cancelled, Context, UserError
 OPTIMIZERS = {"LBFGS": LBFGS, "FIRE": FIRE}
 
 
+def thermalize(atoms, temperature_K: float, rng) -> None:
+    """Maxwell-Boltzmann momenta: `thermalize_momenta` on ASE >= 3.29, the older name before it."""
+    from ase.md import velocitydistribution as vd
+
+    if hasattr(vd, "thermalize_momenta"):
+        vd.thermalize_momenta(atoms, temperature_K=temperature_K, rng=rng)
+    else:
+        vd.MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K, rng=rng)
+
+
 def prepare_atoms(ctx: Context, which: str = "structure"):
     try:
         atoms = structures.load(ctx.spec[which])
