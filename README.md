@@ -1,12 +1,19 @@
 # Mena-Lab
 
-Fast machine-learned interatomic potentials for molecules, crystals and surfaces, with a web app and a command line
+Fast MLIP for molecules, crystals and surfaces, with a web app and a command line
 that run on your own computer (Windows, macOS, Linux; CPU, NVIDIA GPU or Apple GPU).
+
+The core idea is that bu running a single command, it should open the web interface where you can start running simulations and tests without friction
+
+The project is mainly optimized to run on CPU, and MPS (GPU acceleration of Macs). CUDA optimization hasn't been tested extensively due to missing resources, but I believe there is a 3-5x speed improvement at least.
+
+Mena-Lab is an independent project: the models were developed and trained independently with personal resources a lot of effort. 
+The calculator uses 2 Mena models for now, one for materials, and another for molecules. Especially the molecules ones is very fast and efficient, I can say that datacenter gpu speed is achieved on a laptop, paying only partially for accuracy, and in some cases not even paying for it.
 
 Relax a structure, run molecular dynamics, compute vibrations with IR and Raman spectra, phonons or a reaction barrier,
 without writing code.
 
-Mena-Lab is an independent project: the models were developed and trained by Francesco Viola with personal resources and in personal time.
+
 
 ## Install
 
@@ -73,4 +80,4 @@ Code: [Apache-2.0](LICENSE). Model weights: [CC BY 4.0](LICENSE-WEIGHTS). Third-
 
 ## Citation
 
-A paper is in preparation. Until then, please cite this repository (Mena-Lab) and name the model you used.
+A paper hasn't been published, being alone I didn't want to publish ai slop, but maybe a technical paper on the model architecture and characteristics would be interesting. Until then, please cite this repository (Mena-Lab) and name the model you used, or contact me for further information.
