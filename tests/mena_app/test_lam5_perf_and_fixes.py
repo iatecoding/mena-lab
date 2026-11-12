@@ -375,7 +375,7 @@ def test_export_smiles_cli_python_json_and_neb_slot2(tmp_path, monkeypatch):
         }
     )
     cli_neb = export.to_cli(sp_neb)
-    neb_tokens = shlex.split(cli_neb)
+    neb_tokens = _split_cmdline(cli_neb)
     assert neb_tokens[2] == "smiles:C/C=C/C" and neb_tokens[3] == r"smiles:C/C=C\C"
 
     an_neb = structures.analyze(structures.load(sp_neb["structure"]))

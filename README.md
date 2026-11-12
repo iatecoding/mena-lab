@@ -77,13 +77,13 @@ The two models have different energy references: compare energies computed with 
 ## Benchmarks
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/accuracy-dark.svg">
-  <img alt="Accuracy: protein–ligand interaction error on PLF547 (Mena-LAM-s 0.297 kcal/mol) and DynaMat CMDS on Matbench Discovery (Mena-LAM-preview 0.787)" src="docs/accuracy-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/molecules-dark.svg">
+  <img alt="Mena-LAM-s on molecules: protein–ligand interaction error 0.297 kcal/mol on PLF547; about 12,000 atoms per second and 4.9 GB at 8,192 atoms on an Apple M3 Max laptop" src="docs/molecules-light.svg" width="100%">
 </picture>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/speed-memory-dark.svg">
-  <img alt="Speed and memory in DynaMat molecular dynamics: Mena-LAM-preview 2.4 h and 0.72 GB on one A100" src="docs/speed-memory-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/materials-dark.svg">
+  <img alt="Mena-LAM-preview on crystals and surfaces: DynaMat CMDS 0.787; 2.4 hours and 0.72 GB peak memory on one A100" src="docs/materials-light.svg" width="100%">
 </picture>
 
 The web app's **Performance** tab has more results and a live speed test on your own computer.
