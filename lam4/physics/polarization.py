@@ -29,6 +29,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from lam4.core.angular import l2_mat6, l2_matvec
+from lam4.core.remat import can_chunk_nodes, chunked_node_apply, node_chunk_size
 from lam4.core.vector_bound import bound_vectors
 from lam4.physics.coulomb_exact import COULOMB_K
 
@@ -57,18 +58,40 @@ class Polarization(nn.Module):
         tau = bound_vectors(ten, self.vec_c)
         return (self.aniso_head(h).unsqueeze(-1) * tau).sum(-2)
 
-    def forward(self, s: Tensor, p: Tensor, field: Tensor, atom_mask: Tensor, *, normed: bool = False,
-                return_alpha: bool = False, ten: Tensor | None = None, return_aniso: bool = False):
+    def _forward_plain(self, s: Tensor, p: Tensor, field: Tensor, atom_mask: Tensor, *, normed: bool = False,
+                       ten: Tensor | None = None):
         mf = atom_mask.to(s.dtype)
-        a = self.alpha(s, normed=normed) * mf
+        h = s if normed else F.rms_norm(s, (s.shape[-1],), eps=1e-6)
+        a = self.pol_alpha * F.softplus(self.alpha_head(h).squeeze(-1)) * mf
         e = -COULOMB_K * (self.pol_gamma * (p * field).sum(-1) + 0.5 * a * field.pow(2).sum(-1)) * mf
         p_ind = a.unsqueeze(-1) * field
         a_aniso = None
-        if self.aniso and ten is not None:
-            a_aniso = self.alpha_aniso(s, ten, normed=normed) * mf.unsqueeze(-1)
+        if self.aniso and self.aniso_head is not None and ten is not None:
+            tau = bound_vectors(ten, self.vec_c)
+            a_aniso = (self.aniso_head(h).unsqueeze(-1) * tau).sum(-2) * mf.unsqueeze(-1)
             p_aniso = l2_matvec(l2_mat6(a_aniso), field)
             p_ind = p_ind + p_aniso
             e = e - 0.5 * COULOMB_K * (p_aniso * field).sum(-1) * mf
+        return (e, p_ind, a) if a_aniso is None else (e, p_ind, a, a_aniso)
+
+    def forward(self, s: Tensor, p: Tensor, field: Tensor, atom_mask: Tensor, *, normed: bool = False,
+                return_alpha: bool = False, ten: Tensor | None = None, return_aniso: bool = False):
+        ps = tuple(self.parameters())
+        has_aniso = self.aniso and self.aniso_head is not None and ten is not None
+        cn = node_chunk_size(s.device)
+        if not self.training and can_chunk_nodes(s.shape[0], ps, min_atoms=cn):
+            sliced = (s, p, field, atom_mask, ten) if has_aniso else (s, p, field, atom_mask)
+
+            def _fn(_a0: int, _a1: int, *xs):
+                return self._forward_plain(xs[0], xs[1], xs[2], xs[3], normed=normed, ten=xs[4] if has_aniso else None)
+
+            outs = chunked_node_apply(_fn, sliced, params=ps, chunk_atoms=cn)
+            e, p_ind, a = outs[0], outs[1], outs[2]
+            a_aniso = outs[3] if has_aniso else None
+        else:
+            outs = self._forward_plain(s, p, field, atom_mask, normed=normed, ten=ten)
+            e, p_ind, a = outs[0], outs[1], outs[2]
+            a_aniso = outs[3] if has_aniso else None
         if return_aniso:
             return (e, p_ind, a, a_aniso) if return_alpha else (e, p_ind, a_aniso)
         return (e, p_ind, a) if return_alpha else (e, p_ind)

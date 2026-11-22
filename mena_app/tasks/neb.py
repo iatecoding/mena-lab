@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from ase.calculators.singlepoint import SinglePointCalculator
 from ase.mep import NEB
 from ase.optimize import FIRE
 
@@ -14,6 +15,8 @@ _DECOMP_TERMS = (
     ("network", "ΔNetwork", "Many-body network"),
     ("electrostatic", "ΔElectrostatics", "Long-range electrostatics"),
     ("polarization", "ΔPolarization", "Electronic polarization"),
+    ("cloud_overlap", "ΔCloud overlap", "Electron cloud overlap / Pauli"),
+    ("spin_exchange", "ΔSpin exchange", "Hund / Heisenberg spin exchange"),
     ("dispersion_d3", "ΔDispersion D3", "London dispersion (DFT-D3)"),
     ("repulsion", "ΔCore repulsion", "Short-range core repulsion"),
 )
@@ -22,7 +25,33 @@ _DECOMP_TERMS = (
 class _CachedNEB(NEB):
     last_forces: np.ndarray | None = None
 
+    def __init__(self, images, *args, batch_calc=None, **kwargs):
+        super().__init__(images, *args, **kwargs)
+        self._batch_calc = batch_calc
+        self._last_mid_pos: list[np.ndarray] | None = None
+
+    def _eval_intermediates_batch(self) -> None:
+        mids = self.images[1:-1]
+        if not mids or self._batch_calc is None:
+            return
+        cur_pos = [im.get_positions().copy() for im in mids]
+        if (
+            self._last_mid_pos is not None
+            and len(self._last_mid_pos) == len(cur_pos)
+            and all(np.array_equal(a, b) for a, b in zip(self._last_mid_pos, cur_pos))
+        ):
+            return
+        outs = self._batch_calc.eval_batch(mids, properties=("energy", "forces"))
+        for im, out in zip(mids, outs):
+            sp = SinglePointCalculator(im, energy=float(out["energy"]), forces=np.asarray(out["forces"], dtype=float))
+            for k in ("dipole", "dipole_debye", "charges", "atomic_polarizabilities", "polarizability"):
+                if k in out:
+                    sp.results[k] = out[k]
+            im.calc = sp
+        self._last_mid_pos = cur_pos
+
     def get_forces(self):
+        self._eval_intermediates_batch()
         f = super().get_forces()
         self.last_forces = f
         return f
@@ -90,15 +119,19 @@ def run(ctx):
                 raise Cancelled()
     e0 = float(_ensure_results(a)["energy"])
     e_end = float(_ensure_results(b)["energy"])
+    use_batch = hasattr(calc, "eval_batch") and p["images"] > 0
     images = [a] + [a.copy() for _ in range(p["images"])] + [b]
-    for im in images[1:-1]:
-        c_im = backends.clone_calculator(calc)
-        if hasattr(c_im, "skin"):
-            c_im.skin = 0.0
-        im.calc = c_im
-    neb = _CachedNEB(images, climb=p["climb"], method="improvedtangent")
+    if not use_batch:
+        for im in images[1:-1]:
+            c_im = backends.clone_calculator(calc)
+            if hasattr(c_im, "skin"):
+                c_im.skin = 0.0
+            im.calc = c_im
+    neb = _CachedNEB(images, climb=p["climb"], method="improvedtangent", batch_calc=None)
     ctx.status("building the starting path")
     neb.interpolate("idpp")
+    if use_batch:
+        neb._batch_calc = calc
     opt = FIRE(neb, logfile=None)
     state = {"cancelled": False}
 
@@ -120,6 +153,12 @@ def run(ctx):
     except Cancelled:
         state["cancelled"] = True
     ctx.flush()
+    if use_batch and not state["cancelled"] and "energy_decomposition" in _ensure_results(a):
+        for im in images[1:-1]:
+            c_im = backends.clone_calculator(calc)
+            if hasattr(c_im, "skin"):
+                c_im.skin = 0.0
+            im.calc = c_im
     results_list = [_ensure_results(im) for im in images]
     es = np.array([float(res["energy"]) for res in results_list])
     rel = es - es[0]

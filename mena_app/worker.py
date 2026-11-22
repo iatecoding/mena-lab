@@ -23,6 +23,13 @@ def main() -> int:
     root = req["model"].get("code_root")
     if root:
         sys.path.insert(0, root)
+    # Compiled kernels persist in the user's Mena folder: the system temp dir is purged, which turns a ~5 s compiled
+    # warm-up back into a 25-40 s one. Set before torch is imported (Inductor reads it once); a user value wins.
+    try:
+        from mena_app.paths import data_dir
+        os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(data_dir() / "compile_cache"))
+    except Exception:  # noqa: BLE001
+        pass
     threads = req["decision"].get("threads")
     if threads:
         for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "OPENBLAS_NUM_THREADS"):

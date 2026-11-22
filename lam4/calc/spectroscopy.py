@@ -53,9 +53,11 @@ def build_energy_decomposition(
     e0_kcal: float,
     eqs_kcal: float,
     term_sums_kcal: dict[str, float],
+    ov_kcal: float = 0.0,
+    exch_kcal: float = 0.0,
 ) -> dict[str, Any]:
     """Structured energy breakdown in both eV and kcal/mol (total DFT vs interaction residual)."""
-    inter_kcal = net_kcal + coul_kcal + pol_kcal + rep_kcal + d3_kcal
+    inter_kcal = net_kcal + coul_kcal + pol_kcal + rep_kcal + ov_kcal + exch_kcal + d3_kcal
     tot_kcal = inter_kcal + e0_kcal + eqs_kcal
     kcal = {
         "total": tot_kcal,
@@ -68,6 +70,8 @@ def build_energy_decomposition(
         "electrostatic": coul_kcal,
         "polarization": pol_kcal,
         "repulsion": rep_kcal,
+        "cloud_overlap": ov_kcal,
+        "spin_exchange": exch_kcal,
         "dispersion_d3": d3_kcal,
         "reference_e0": e0_kcal,
         "reference_charge_spin": eqs_kcal,

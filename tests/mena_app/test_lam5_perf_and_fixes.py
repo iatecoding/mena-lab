@@ -81,10 +81,11 @@ def test_benchmarks_json_lam5_molecules_and_architecture_status():
     assert arch["molecules"]["status"] == "active"
     assert "lam5-v1" in arch["molecules"]["badge"]
     assert "IR & Raman" in arch["molecules"]["body"]
-    assert arch["materials"]["status"] == "preview"
-    assert "lam-400k" in arch["materials"]["body"]
-    assert "44,670" in arch["materials"]["body"] and "65,536" in arch["materials"]["body"]
-    assert "Settings" in arch["materials"]["body"]  # how to choose Mena-LAM-s for crystals
+    assert arch["materials"]["status"] == "active"
+    assert "lam6-v1" in arch["materials"]["badge"]
+    assert "lam6-v1" in arch["materials"]["body"] and "lam-400k" in arch["materials"]["body"]
+    assert "65,895" in arch["materials"]["body"] and "64,000" in arch["materials"]["body"]
+    assert "Settings" in arch["materials"]["body"]  # how to choose alternative crystal models
 
     # Mena-LAM-s molecular section: measured numbers
     mol = b["molecules_lam5"]
@@ -94,13 +95,13 @@ def test_benchmarks_json_lam5_molecules_and_architecture_status():
 
     t2_by_n = {row["n"]: row for row in mol["tier2_scaling"]["rows"]}
     assert {24, 96, 288, 1024, 2048, 4096, 8192, 16384} <= set(t2_by_n)
-    assert t2_by_n[1024]["atoms_per_s"] == 13210 and "0.48 GB" in t2_by_n[1024]["t2_gb"]
-    assert t2_by_n[8192]["atoms_per_s"] == 11727 and t2_by_n[8192]["t1_ms"] is None and "4.89 GB" in t2_by_n[8192]["t2_gb"]
-    assert t2_by_n[16384]["atoms_per_s"] == 11309 and "5.30 GB" in t2_by_n[16384]["t2_gb"]
+    assert t2_by_n[1024]["atoms_per_s"] == 18379 and "0.46 GB" in t2_by_n[1024]["t2_gb"]
+    assert t2_by_n[8192]["atoms_per_s"] == 29808 and t2_by_n[8192]["t1_ms"] is None and "2.69 GB" in t2_by_n[8192]["t2_gb"]
+    assert t2_by_n[16384]["atoms_per_s"] == 23384 and "2.13 GB" in t2_by_n[16384]["t2_gb"]
 
     cpu_facts = mol["cpu_and_workflows"]["facts"]
-    assert "0.16 MB/atom" in cpu_facts["CPU low-memory mode (3,000 atoms)"]
-    assert "+0.47 GB" in cpu_facts["CPU low-memory mode (3,000 atoms)"] and "0.84 GB" in cpu_facts["CPU low-memory mode (3,000 atoms)"]
+    assert "0.17 MB/atom" in cpu_facts["CPU low-memory mode (3,000 atoms)"]
+    assert "+0.50 GB" in cpu_facts["CPU low-memory mode (3,000 atoms)"] and "0.89 GB" in cpu_facts["CPU low-memory mode (3,000 atoms)"]
     assert "+1.31 GB" in cpu_facts["CPU low-memory mode (8,193 atoms)"] and "1.68 GB" in cpu_facts["CPU low-memory mode (8,193 atoms)"]
     assert "30.05×" in cpu_facts["GPU relax_batch (24× L-BFGS, 35 steps)"]
     assert "0.508 s" in cpu_facts["Caffeine Hessian + IR + Raman"]
@@ -115,8 +116,8 @@ def test_benchmarks_json_lam5_molecules_and_architecture_status():
 
     # Mena-LAM-s on crystals card
     mat_prev = b["materials_tier2_preview"]
-    assert "44,670 atoms/s" in mat_prev["facts"]["8,192-atom Silicon (E+F+Voigt Stress)"]
-    assert "5.80 GB" in mat_prev["facts"]["65,536-atom Silicon supercell"]
+    assert "65,895 atoms/s" in mat_prev["facts"]["8,000-atom silicon (energy, forces, stress)"]
+    assert "4.53 GB" in mat_prev["facts"]["64,000-atom silicon supercell"]
     assert "0.2992" in mat_prev["facts"]["PhononDB-103 thermal conductivity"]
 
     # Verify /api/benchmarks HTTP endpoint serves the updated payload cleanly

@@ -19,8 +19,11 @@ __all__ = [
     "coef_to_horner_poly",
     "device_supports_csr",
     "edge_aggregate_csr",
+    "eval_nlh_decoupled",
     "has_metal_coulomb",
     "has_metal_d3",
+    "has_triton_coulomb_bwd2",
+    "has_triton_csr_bwd2",
     "metal_d3_csr",
     "metal_d3_grouped",
 ]
@@ -35,6 +38,18 @@ def __getattr__(name: str) -> Any:
         from lam4.kernels import csr_ops
 
         return getattr(csr_ops, name)
+    if name == "has_triton_csr_bwd2":
+        from lam4.kernels import triton_csr_bwd2
+
+        return getattr(triton_csr_bwd2, name)
+    if name == "has_triton_coulomb_bwd2":
+        from lam4.kernels import triton_coulomb_bwd2
+
+        return getattr(triton_coulomb_bwd2, name)
+    if name == "eval_nlh_decoupled":
+        from lam4.kernels import triton_nlh
+
+        return getattr(triton_nlh, name)
     if name in ("MetalExactCoulomb", "has_metal_coulomb"):
         from lam4.kernels import metal_coulomb
 

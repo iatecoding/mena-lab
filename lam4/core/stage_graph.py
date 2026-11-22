@@ -54,10 +54,10 @@ class EdgeGraph:
         create_graph: bool = False,
     ) -> "EdgeGraph":
         p = b.pos if pos is None else pos
-        if mode == "csr" and not create_graph:
+        if mode == "csr":
             return cls(
                 p, b.edge_index[1], b.edge_index[0], p.new_zeros(0), rho, chunks, None, mode, b.z,
-                csr_plan=csr_plan, edge_shift=b.edge_shift, cell=b.cell, graph=b.graph, create_graph=False,
+                csr_plan=csr_plan, edge_shift=b.edge_shift, cell=b.cell, graph=b.graph, create_graph=create_graph,
             )
         return cls(p, b.edge_index[1], b.edge_index[0], b.cart_shift(), rho, chunks, None, mode, b.z, create_graph=create_graph)
 

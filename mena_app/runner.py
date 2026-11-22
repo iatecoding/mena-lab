@@ -20,11 +20,13 @@ CANCEL_GRACE_S = 1.5
 WINDOWS_CANCEL_GRACE_S = 6.0  # Windows has no catchable SIGTERM: the worker sees the cancel file at its next step
 WINDOWS = sys.platform == "win32"
 KILL_BELOW_GB = 1.0
+VRAM_KILL_BELOW_GB = 0.15
 MEM_POLL_INTERVAL_S = 2.0
 
 
 def _env(model: dict) -> dict:
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    env.setdefault("TORCHINDUCTOR_CACHE_DIR", str(paths.data_dir() / "compile_cache"))
     parts = [p for p in (model.get("code_root"), str(paths.REPO_ROOT), env.get("PYTHONPATH")) if p]
     env["PYTHONPATH"] = os.pathsep.join(parts)
     return env
@@ -92,6 +94,10 @@ def run(plan: dict, spec: dict, workdir: str, emit: Callable[[dict], None], canc
             proc.stdin.close()
         except (BrokenPipeError, OSError):
             pass
+        dec_dev = str((plan or {}).get("decision", {}).get("device") or "cpu")
+        cuda_idx = int(dec_dev.split(":", 1)[1]) if dec_dev.startswith("cuda:") and dec_dev[5:].isdigit() else 0
+        watch_vram = dec_dev == "cuda" or (dec_dev.startswith("cuda:") and dec_dev[5:].isdigit())
+        mem_reason_msg: str | None = None
         t0, term_at, last_mem_check = time.time(), None, 0.0
         while proc.poll() is None:
             time.sleep(0.2)
@@ -106,6 +112,12 @@ def run(plan: dict, spec: dict, workdir: str, emit: Callable[[dict], None], canc
                     free = system.available_memory_bytes()
                     if free and free / 1e9 < KILL_BELOW_GB:
                         reason = "memory_guard"
+                        mem_reason_msg = f"Stopped to protect your computer: free memory fell below {KILL_BELOW_GB:.0f} GB."
+                    elif watch_vram:
+                        vram_free = system.available_vram_bytes(cuda_idx)
+                        if vram_free is not None and vram_free / 1e9 < VRAM_KILL_BELOW_GB:
+                            reason = "memory_guard"
+                            mem_reason_msg = f"Stopped to protect your GPU ({dec_dev}): free VRAM fell below {VRAM_KILL_BELOW_GB:.2f} GB."
                 if reason:
                     _request_stop(proc, cancel_file)
                     term_at = now
@@ -134,7 +146,7 @@ def run(plan: dict, spec: dict, workdir: str, emit: Callable[[dict], None], canc
     elif reason == "timeout":
         out.update(status="timeout", error=f"Stopped after {timeout_s:.0f} s.")
     elif reason == "memory_guard":
-        out.update(status="stopped", error=f"Stopped to protect your computer: free memory fell below {KILL_BELOW_GB:.0f} GB.")
+        out.update(status="stopped", error=mem_reason_msg or f"Stopped to protect your computer: free memory fell below {KILL_BELOW_GB:.0f} GB.")
     elif out["result"] is None and out["error"] is None:
         code = proc.returncode
         why = "killed by the system, probably out of memory" if code in (-9, -6, 137) else f"exit code {code}"

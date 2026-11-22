@@ -11,8 +11,8 @@ import lam.models.edge_ops as eo
 
 
 def _mix(x: Tensor, lin: nn.Linear) -> Tensor:
-    """Channel mixing of an equivariant feature [..., C, 3] with a bias-free Linear."""
-    return lin(x.transpose(-1, -2)).transpose(-1, -2)
+    """Channel mixing of an equivariant feature [..., C, 3] with a bias-free Linear (contiguous input: N tiny matmuls otherwise)."""
+    return lin(x.transpose(-1, -2).contiguous()).transpose(-1, -2)
 
 
 class VectorSwiGLU(nn.Module):
@@ -58,5 +58,5 @@ class VectorSwiGLU(nn.Module):
         q_norm = F.rms_norm(q, (q.shape[-1],), eps=self.eps)
         s_norm = F.rms_norm(s, (s.shape[-1],), eps=self.eps)
         g = F.silu(self.gate(torch.cat([s_norm, q_norm], dim=-1)))
-        out = self.w_o(eo.scale(h_a, g).transpose(-1, -2)).transpose(-1, -2)
+        out = self.w_o(eo.scale(h_a, g).transpose(-1, -2).contiguous()).transpose(-1, -2)
         return v + out

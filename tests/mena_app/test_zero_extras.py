@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 from ase.build import bulk
+from ase.calculators.calculator import Calculator, all_changes
 from ase.calculators.lj import LennardJones
 from ase.data import covalent_radii
 from ase.phonons import Phonons
@@ -99,7 +100,8 @@ def test_smiles_to_atoms_formula_charge_spin_and_clash_free_3d(smi, formula, cha
 
 def test_smiles_stereo_fragments_speed_and_errors():
     # Warmup then verify < 40 ms on drug-sized molecules (caffeine & ibuprofen); shared CI runners get a looser bound
-    limit_ms = 250.0 if os.environ.get("CI") else 40.0
+    is_shared_runner = bool(os.environ.get("CI") or os.environ.get("COLAB_RELEASE_TAG") or os.environ.get("COLAB_GPU"))
+    limit_ms = 250.0 if is_shared_runner else 40.0
     smiles.smiles_to_atoms("CCO")
     for drug in ("Cn1cnc2c1c(=O)n(c(=O)n2C)C", "CC(C)Cc1ccc(cc1)C(C)C(=O)O", "CC(=O)Oc1ccccc1C(=O)O"):
         dts = []
@@ -309,9 +311,18 @@ def test_full_end_to_end_with_rdkit_spglib_and_yaml_blocked(tmp_path, monkeypatc
     assert "not installed" not in doc_out
 
     # 2. End-to-end SMILES singlepoint execution (caffeine & methyl radical)
-    from tests.mena_app.test_fixes import HarmonicCalc
+    class _HarmonicCalc(Calculator):
+        implemented_properties = ["energy", "forces", "stress"]
 
-    monkeypatch.setattr(backends, "build", lambda model, dec: HarmonicCalc())
+        def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
+            super().calculate(atoms, properties, system_changes)
+            pos = self.atoms.get_positions()
+            disp = pos - pos.mean(axis=0, keepdims=True)
+            self.results = {"energy": 0.75 * float((disp ** 2).sum()), "forces": -1.5 * disp}
+            if self.atoms.pbc.all():
+                self.results["stress"] = np.zeros(6, dtype=float)
+
+    monkeypatch.setattr(backends, "build", lambda model, dec: _HarmonicCalc())
     for smi, exp_q, exp_s in (("Cn1cnc2c1c(=O)n(c(=O)n2C)C", 0, 1), ("[CH3]", 0, 2)):
         spec = validation.validate({"task": "singlepoint", "structure": {"format": "smiles", "text": smi},
                                     "system": {"charge": exp_q, "spin": exp_s}})

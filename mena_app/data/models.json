@@ -1,8 +1,56 @@
 {
  "models": [
   {
+   "id": "lam6-v1",
+   "title": "Mena-LAM-6",
+   "role": "crystals & surfaces; physics heads for interpretation",
+   "file": "mena-lam6-v1.pt",
+   "size_mb": 34.0,
+   "sha256": "3662302cab3a8689efeee36d75bb5dffbe92914342916fbb33e498fac2577a85",
+   "urls": [
+    "https://github.com/iatecoding/mena-lab/releases/download/v0.1.0/mena-lam6-v1.pt",
+    "https://huggingface.co/iatecoding/Mena-LAM-6/resolve/main/mena-lam6-v1.pt"
+   ],
+   "license": "CC-BY-4.0",
+   "backend": "lam4",
+   "domains": [
+    "crystal",
+    "slab",
+    "molecule"
+   ],
+   "rank": {
+    "crystal": 0,
+    "slab": 0,
+    "molecule": 1
+   },
+   "params_m": 8.48,
+   "lots": [
+    "mp_pbe",
+    "mp_pbeU",
+    "omat_pbe",
+    "omat_pbeU",
+    "matpes_pbe",
+    "matpes_r2scan",
+    "oc20_rpbe",
+    "oc25_rpbe",
+    "mad16_r2scan",
+    "omc25_pbe",
+    "omol_wb97mv",
+    "spice_wb97md3"
+   ],
+   "dtypes": [
+    "float32",
+    "float64"
+   ],
+   "low_memory": true,
+   "interpretable": true,
+   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OC25, MAD-1.6, OMC25, SPICE 2",
+   "metrics": "Matbench Discovery: CPS 0.874, F1 0.904, κSRME 0.182. Molecules (OMol25 val): energy 2.00, forces 0.40 kcal/mol/Å. Physics heads: gap, Pauli overlap, unpaired electrons"
+  },
+  {
    "id": "lam5-v1",
    "title": "Mena-LAM-s",
+   "role": "molecules: most accurate energies, charges, IR & Raman",
    "file": "mena-lam5-v1.pt",
    "size_mb": 34.8,
    "sha256": "cc229d271ecadf029e32135168bbff4b19db9e5406d995104502084a027b2698",
@@ -19,8 +67,8 @@
    ],
    "rank": {
     "molecule": 0,
-    "crystal": 1,
-    "slab": 1
+    "crystal": 2,
+    "slab": 2
    },
    "params_m": 8.67,
    "lots": [
@@ -37,12 +85,13 @@
     "float64"
    ],
    "low_memory": true,
-   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OC22, OMC25, OpenRxn, SPICE",
+   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OC22, OMC25, OpenRxn26, SPICE 2",
    "metrics": "Molecules (OMol25 held-out): energy 1.64, forces 0.34 kcal/mol/Å; PLF547 protein–ligand 0.297 kcal/mol"
   },
   {
    "id": "lam-400k",
    "title": "Mena-LAM-preview",
+   "role": "earlier materials model, kept for comparison",
    "file": "mena-lam-400k.pt",
    "size_mb": 25.6,
    "sha256": "75454aea3acc62774769531aef9b48282a74b334888aaab6e2613f1c1cc276cb",
@@ -58,8 +107,8 @@
     "molecule"
    ],
    "rank": {
-    "crystal": 0,
-    "slab": 0,
+    "crystal": 1,
+    "slab": 1,
     "molecule": 3
    },
    "params_m": 6.37,

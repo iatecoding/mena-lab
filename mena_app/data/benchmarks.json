@@ -8,10 +8,10 @@
    "body": "Molecules run on Mena-LAM-s by default (35 MB, loads in about 60 ms). Besides energies and forces it predicts partial charges, the dipole and the polarizability, which give IR & Raman spectra, and includes D3(BJ) dispersion. Fused GPU kernels and a low-memory CPU mode run biomolecules of thousands of atoms on a laptop."
   },
   "materials": {
-   "status": "preview",
-   "badge": "Default for crystals and surfaces",
-   "title": "Periodic materials: Mena-LAM-preview (lam-400k)",
-   "body": "Crystals and surfaces use Mena-LAM-preview (lam-400k) by default: Matbench Discovery F1 0.905, CPS 0.849, DynaMat MD CMDS 0.787. Mena-LAM-s can also be chosen for crystals in Settings; on an Apple M3 Max laptop it runs 44,670 atoms/s at 8,192 silicon atoms and fits 65,536 atoms in 5.80 GB."
+   "status": "active",
+   "badge": "Default for crystals and surfaces · Mena-LAM-6 (lam6-v1)",
+   "title": "Periodic materials: Mena-LAM-6 (lam6-v1)",
+   "body": "Crystals and surfaces run on Mena-LAM-6 (lam6-v1, 34 MB) by default: Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182, with OC20/OC25/MAD-1.6 catalysis support and physics interpretation heads. Earlier Mena-LAM-preview (lam-400k: F1 0.905, CPS 0.849, DynaMat MD CMDS 0.787) and Mena-LAM-s (lam5-v1: 65,895 atoms/s at 8,000 silicon atoms and 53,616 atoms/s at 64,000 atoms in 3.7 GB on Apple M3 Max) can also be chosen in Settings."
   }
  },
  "molecules_lam5": {
@@ -24,18 +24,18 @@
     "sub": "Ahead of MACE-POLAR-1-L (0.37), UMA-M-1.1 (0.82) and MACE-OMOL (1.08) on ML-PEG"
    },
    {
-    "value": "11,727",
+    "value": "29,808",
     "unit": "atoms/s",
     "badge": "M3 Max GPU · 8,192 atoms",
     "label": "Biomolecule scaling on a laptop GPU",
-    "sub": "4.89 GB at 8,192 atoms, where plain PyTorch runs out of memory (>38.1 GB); 13,210 atoms/s and 0.48 GB at 1,024 atoms"
+    "sub": "2.69 GB at 8,192 atoms (1.28 GB in low-memory mode), where plain PyTorch runs out of memory; 18,379 atoms/s and 0.46 GB at 1,024 atoms"
    },
    {
-    "value": "0.16",
+    "value": "0.17",
     "unit": "MB/atom",
     "badge": "CPU low-memory mode",
     "label": "CPU low-memory scaling",
-    "sub": "3,000 atoms in +0.47 GB net (0.84 GB RSS); 8,193 atoms in +1.31 GB net (1.68 GB RSS); 15–45 ms drug SP"
+    "sub": "3,000 atoms in +0.50 GB net (0.89 GB process), 3.4 s per call; 15–45 ms drug SP"
    },
    {
     "value": "30.1×",
@@ -97,7 +97,7 @@
   },
   "tier2_scaling": {
    "title": "Molecular scaling on an Apple M3 Max (36 GB): fused GPU kernels vs. plain PyTorch",
-   "badge": "Up to 6.5× faster · 7.4× lower RAM",
+   "badge": "Up to 12.5× faster · 9.9× lower GPU memory",
    "columns": [
     "System",
     "Atoms",
@@ -112,93 +112,93 @@
     {
      "system": "Caffeine (drug)",
      "n": 24,
-     "t1_ms": 33.6,
-     "t2_ms": 28.8,
-     "atoms_per_s": 833,
-     "speedup": "1.17×",
-     "t1_gb": "0.17 GB",
-     "t2_gb": "0.17 GB"
+     "t1_ms": 42.0,
+     "t2_ms": 37.0,
+     "atoms_per_s": 648,
+     "speedup": "1.14×",
+     "t1_gb": "0.14 GB",
+     "t2_gb": "0.11 GB"
     },
     {
      "system": "(H₂O)₃₂ cluster",
      "n": 96,
-     "t1_ms": 46.0,
-     "t2_ms": 29.8,
-     "atoms_per_s": 3227,
-     "speedup": "1.55×",
-     "t1_gb": "0.19 GB",
-     "t2_gb": "0.18 GB"
+     "t1_ms": 50.2,
+     "t2_ms": 30.7,
+     "atoms_per_s": 3126,
+     "speedup": "1.64×",
+     "t1_gb": "0.33 GB",
+     "t2_gb": "0.15 GB"
     },
     {
      "system": "Binding pocket",
      "n": 288,
-     "t1_ms": 88.7,
-     "t2_ms": 35.9,
-     "atoms_per_s": 8022,
-     "speedup": "2.47×",
-     "t1_gb": "1.41 GB",
-     "t2_gb": "0.24 GB"
+     "t1_ms": 107.8,
+     "t2_ms": 34.2,
+     "atoms_per_s": 8415,
+     "speedup": "3.15×",
+     "t1_gb": "1.42 GB",
+     "t2_gb": "0.25 GB"
     },
     {
      "system": "Solvated protein",
      "n": 1024,
-     "t1_ms": 299.1,
-     "t2_ms": 77.5,
-     "atoms_per_s": 13210,
-     "speedup": "3.86×",
-     "t1_gb": "3.58 GB",
-     "t2_gb": "0.48 GB (0.25 low-mem)"
+     "t1_ms": 423.1,
+     "t2_ms": 55.7,
+     "atoms_per_s": 18379,
+     "speedup": "7.60×",
+     "t1_gb": "3.92 GB",
+     "t2_gb": "0.46 GB"
     },
     {
      "system": "Biomolecule",
      "n": 2048,
-     "t1_ms": 756.3,
-     "t2_ms": 160.9,
-     "atoms_per_s": 12732,
-     "speedup": "4.70×",
-     "t1_gb": "7.16 GB",
-     "t2_gb": "1.61 GB"
+     "t1_ms": 816.6,
+     "t2_ms": 84.5,
+     "atoms_per_s": 24224,
+     "speedup": "9.66×",
+     "t1_gb": "6.51 GB",
+     "t2_gb": "1.45 GB"
     },
     {
      "system": "Biomolecule",
      "n": 4096,
-     "t1_ms": 2146.6,
-     "t2_ms": 328.1,
-     "atoms_per_s": 12484,
-     "speedup": "6.54×",
-     "t1_gb": "11.78 GB",
-     "t2_gb": "3.02 GB"
+     "t1_ms": 1794.0,
+     "t2_ms": 143.8,
+     "atoms_per_s": 28479,
+     "speedup": "12.48×",
+     "t1_gb": "13.88 GB",
+     "t2_gb": "1.41 GB"
     },
     {
      "system": "Large protein",
      "n": 8192,
      "t1_ms": null,
-     "t2_ms": 698.6,
-     "atoms_per_s": 11727,
+     "t2_ms": 274.8,
+     "atoms_per_s": 29808,
      "speedup": "OOM → runs",
      "t1_gb": ">38.1 GB (OOM)",
-     "t2_gb": "4.89 GB (2.22 low-mem)"
+     "t2_gb": "2.69 GB (1.28 low-mem)"
     },
     {
      "system": "Mega biomolecule (isolated)",
      "n": 16384,
      "t1_ms": null,
-     "t2_ms": 1448.7,
-     "atoms_per_s": 11309,
+     "t2_ms": 700.7,
+     "atoms_per_s": 23384,
      "speedup": "OOM → runs",
      "t1_gb": "OOM",
-     "t2_gb": "5.30 GB (3.21 low-mem)"
+     "t2_gb": "2.13 GB (1.47 low-mem)"
     }
    ],
-   "note": "The fused path runs message passing, exact Coulomb and D3 dispersion as Metal GPU kernels with constant extra memory. At 8,192 atoms plain PyTorch runs out of memory (>38.1 GB), while the fused path runs at 11,727 atoms/s in 4.89 GB (2.22 GB in low-memory mode).",
-   "source": "Measured on an Apple M3 Max (36 GB)."
+   "note": "The fused path runs message passing, exact Coulomb and D3 dispersion as Metal GPU kernels with constant extra memory. At 8,192 atoms it runs 29,808 atoms/s in 2.69 GB of GPU memory (1.28 GB in low-memory mode); plain PyTorch needs 13.9 GB at 4,096 atoms and runs out of memory at 8,192.",
+   "source": "Measured on an Apple M3 Max (36 GB) on 2026-11-12, one process per size: energy and forces with a 0.6 Å neighbour skin and MD-like moves. Memory is what each run needs: the least Metal GPU memory it reached with the allocator limited (with memory free, PyTorch's allocator keeps freed blocks and the peak is higher). Speeds are with memory free."
   },
   "cpu_and_workflows": {
-   "title": "CPU low-memory mode (0.16 MB/atom) and batched GPU workflows",
+   "title": "CPU low-memory mode (0.17 MB/atom) and batched GPU workflows",
    "badge": "Apple M3 Max CPU & GPU",
    "facts": {
     "CPU drug single-point": "17.1–39.2 ms (~15–45 ms: H₂O 17.1 ms, caffeine 29.4 ms, ibuprofen 39.2 ms)",
-    "CPU low-memory mode (3,000 atoms)": "+0.47 GB net / 0.84 GB total (0.16 MB/atom)",
+    "CPU low-memory mode (3,000 atoms)": "+0.50 GB net / 0.89 GB total (0.17 MB/atom, measured 2026-11-12)",
     "CPU low-memory mode (8,193 atoms)": "+1.31 GB net / 1.68 GB total (0.16 MB/atom)",
     "GPU eval_batch (64× drugs, N=18–92)": "329.4 structs/s on M3 Max GPU (4.44× faster than plain PyTorch, 74.3)",
     "GPU eval_batch (32× pockets, N=200–310)": "64.3 structs/s in 0.74 GB (6.77× faster, 4.9× lower RAM)",
@@ -227,7 +227,7 @@
  "hardware_banner": {
   "title": "A100 & Apple M3 Max laptop vs. H100 / H200 / Blackwell / H20 data-center GPUs",
   "dynamat": "On the official Matbench Discovery DynaMat v1.0 MD benchmark, Mena-LAM-preview ran on 1× NVIDIA A100 (40 GB, 1.56 TB/s bandwidth) at 24.7 atoms/ms (2.37 h total), while 44 of 45 competing models ran on newer H100, H200, or RTX PRO 6000 Blackwell GPUs (38 on H200 at 4.80 TB/s, 3 on H100 at 3.35 TB/s, 3 on Blackwell 96 GB). Despite running on A100, Mena-LAM-preview finished in 2.37 h (ORB v2 MPA on H200: 2.61 h; DPA-4.1-Air-OAM: 3.52 h) with 0.72 GB peak memory (DPA-4.1-Air-OAM: 1.33 GB; DPA-4.1-Max-OAM-PFT: 22.3 GB) and CMDS 0.787.",
-  "diamond": "On memory per atom (0.66 MB/atom on A100, 0.82 MB/atom on M3 Max, 0.33 MB/atom in low-memory mode), Mena-LAM-preview uses 8×–22× less memory than Meta's UMA-S 1.2.1 Nitro (6.5–9.5 MB/atom standard, ~18.5 MB/atom on 158-nbr diamond, hard-capped at 15,000 atoms on H200) and 9.5× less than DPA-4.1-Air-OAM (7.79 MB/atom on diamond). Even on an Apple M3 Max laptop (36 GB, 300 GB/s — 13.3× lower bandwidth than H20), Mena-LAM-preview reaches 14,480 atoms/s (14.48 atoms/ms) on 158-nbr/atom diamond and 21,700 atoms/s on CsSnI₃."
+  "diamond": "DPA4 dense-diamond test (158 neighbours per atom at 6 Å; energy, forces and stress), measured on an Apple M3 Max laptop (36 GB, 300 GB/s): Mena-LAM-preview runs 13,927 atoms/s compiled (5,301 eager) and needs 1.3 MB/atom; Mena-LAM-s runs 42,902 atoms/s at 13,824 atoms and needs 0.14 MB/atom. Needed memory is the least GPU memory each run fits in when memory is limited; with memory free, the Metal allocator keeps freed blocks and the peak is higher (3.4 and 0.17 MB/atom). The other models were reported on an NVIDIA H20 96 GB server GPU (4,000 GB/s) in the DPA4 paper."
  },
  "headline": [
   {
@@ -252,11 +252,11 @@
    "sub": "DPA-4.1-Air-OAM: 0.776; CPS 0.849 after 30 GPU-hours of training"
   },
   {
-   "value": "14,480",
+   "value": "13,927",
    "unit": "atoms/s",
-   "badge": "M3 Max vs H20 96GB",
+   "badge": "M3 Max laptop · dense diamond",
    "label": "Dense diamond (158 nbr/atom)",
-   "sub": "14.5 atoms/ms compiled (2.96 eager) & 0.82 MB/atom on M3 Max; 21.7 atoms/ms eager on CsSnI₃ (19 nbr/atom)"
+   "sub": "Compiled, energy+forces+stress, needs 1.3 MB/atom; Mena-LAM-s: 42,902 atoms/s at 0.14 MB/atom"
   }
  ],
  "dynamat": {
@@ -684,13 +684,23 @@
   "title": "Memory per atom on dense diamond (158 neighbours/atom, 6 Å)",
   "rows": [
    {
+    "name": "Mena-LAM-s",
+    "mb_per_atom": 0.14,
+    "atoms_per_ms": 42.9,
+    "atoms_per_s": 42902,
+    "cps": null,
+    "gpu": "M3 Max",
+    "hardware": "Apple M3 Max 36 GB laptop (300 GB/s), compiled, 13,824 atoms; needed GPU memory (0.17 MB/atom cached when memory is free)",
+    "mena": true
+   },
+   {
     "name": "Mena-LAM-preview",
-    "mb_per_atom": 0.82,
-    "atoms_per_ms": 14.48,
-    "atoms_per_s": 14480,
+    "mb_per_atom": 1.27,
+    "atoms_per_ms": 13.93,
+    "atoms_per_s": 13927,
     "cps": 0.8491,
     "gpu": "M3 Max",
-    "hardware": "Apple M3 Max 36 GB laptop (300 GB/s, compiled; 0.66 MB/atom on A100, 0.33 MB/atom low-mem)",
+    "hardware": "Apple M3 Max 36 GB laptop (300 GB/s), compiled, 4,096 atoms; needed GPU memory (3.4 MB/atom cached when memory is free)",
     "mena": true
    },
    {
@@ -895,31 +905,30 @@
    }
   ],
   "source": "Other models: DPA4 paper (arXiv:2606.02419) Fig. 1c & Table S-17 on an NVIDIA H20 96 GB (4,000 GB/s). Mena-LAM-preview: measured on this Apple M3 Max laptop (36 GB, 300 GB/s) with the same 6 Å diamond structure and E+F+S protocol.",
-  "note": "Mena-LAM-preview ran on an Apple M3 Max laptop (300 GB/s); all 17 other models ran on an NVIDIA H20 96 GB server GPU (4,000 GB/s)."
+  "note": "Mena rows measured on an Apple M3 Max on 2026-11-12. Memory is what the run needs: the least GPU memory it fits in when the Metal allocator is limited (about 5-10% slower); with memory free the allocator caches more. The other rows are the DPA4 paper's H20 96 GB numbers. Mena-LAM-s has no CPS here (it is not the crystal default)."
  },
  "showcase": {
   "title": "10,000-atom CsSnI₃ perovskite on an Apple M3 Max laptop",
   "note": "20×20×5 CsSnI₃ (188,000 neighbour pairs), NVE with a 1050 K hotspot.",
   "facts": {
    "Atoms": "10,000",
-   "Speed (CsSnI₃ ladder)": "21.7 atoms/ms (21,700 atoms/s)",
    "Speed (10k showcase)": "17.1 atoms/ms (584 ms/step)",
    "Peak memory (10k)": "6.48 GB (0.66 MB/atom)",
    "Low-memory mode (10k)": "3.23 GB, 12.9 atoms/ms",
-   "Energy drift": "0.0065 meV/atom"
+   "Energy drift": "0.0065 meV/atom",
+   "Speed (5,000-atom CsSnI₃, 2026-11-12)": "32.1 atoms/ms eager, 72.0 compiled"
   }
  },
  "materials_tier2_preview": {
   "title": "Mena-LAM-s on crystals: speed on an Apple M3 Max (36 GB)",
-  "badge": "44,670 atoms/s · 65,536 atoms in 5.80 GB",
+  "badge": "65,895 atoms/s · 64,000 atoms in 3.7 GB",
   "facts": {
-   "8,192-atom Silicon (E+F+Voigt Stress)": "44,670 atoms/s (183.4 ms/step) in 2.86 GB (1.25 GB in low-memory mode)",
-   "4,000-atom dense FCC Copper": "38,390 atoms/s (104.2 ms/step) in 1.62 GB",
-   "32,768-atom Silicon supercell": "32,390 atoms/s (1,011.6 ms/step) in 2.56 GB (33.5 KB/atom delta)",
-   "65,536-atom Silicon supercell": "27,950 atoms/s (2,344.5 ms/step) in 5.80 GB (4.69 GB eager)",
+   "8,000-atom silicon (energy, forces, stress)": "65,895 atoms/s compiled (121.4 ms/step), 39,417 eager, in 2.37 GB (1.26 GB and 29,925 atoms/s in low-memory mode)",
+   "13,824-atom dense diamond (158 neighbours/atom)": "42,902 atoms/s compiled; needs 1.91 GB (0.14 MB/atom)",
+   "64,000-atom silicon supercell": "53,616 atoms/s compiled (1,194 ms/step), 32,709 eager; needs 3.67 GB (4.53 GB peak when memory is free)",
    "PhononDB-103 thermal conductivity": "κ_SRME = 0.2992 with 0 / 103 imaginary-mode instabilities (spectrum_w1 = 0.2518)",
    "MDR-442 & Diatomics physics": "MDR-442 force-constant error 0.0941 (−11.3% vs. lam-400k); Diatomics CDS = 0.6712 (+30.1%)"
   },
-  "note": "Measured with Mena-LAM-s on crystals. Automatic uses Mena-LAM-preview (lam-400k) for crystals; pick Mena-LAM-s in Settings for these speeds."
+  "note": "Measured with Mena-LAM-s on crystals on 2026-11-12 (Apple M3 Max, 0.6 Å neighbour skin). Memory is the peak Metal GPU allocation; 'needs' is the least it fits in with the allocator limited. Automatic uses Mena-LAM-6 (lam6-v1) for crystals; pick Mena-LAM-s (or Mena-LAM-preview) in Settings for these speeds."
  }
 }

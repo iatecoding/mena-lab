@@ -2,6 +2,7 @@
 // so results are immediately visible without scrolling, and renders charts + collapsible CSV-exportable tables below.
 import { el, clear, fmt } from './util.js';
 import { Chart } from './charts.js';
+import { renderInterpretation } from './interpret.js';
 
 function conciseSub(hint) {
   if (!hint) return null;
@@ -93,6 +94,8 @@ export function renderReport(host, report, opts = {}) {
     const grid = el('div', { class: 'charts' }); host.append(grid);
     shown.forEach(c => parts.push(new Chart(grid, c)));
   }
+
+  if (report.interpretation) host.append(renderInterpretation(report.interpretation, opts.viewer));
 
   const modes = report.viewer && report.viewer.modes;
   const tables = report.tables || [];

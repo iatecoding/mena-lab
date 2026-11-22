@@ -4,7 +4,7 @@ import { el, clear, fmt, cssVar } from './util.js';
 import { color, radius } from './elements.js';
 import { bondsOf, expand, safeRepeat, scaleCell, sprite, spriteColor, COLORMAPS, scalarRange, scalarColor, MAX_LABEL_ATOMS } from './viewer_geom.js';
 
-const SCALAR_MODES = ['charges', 'spins', 'alpha', 'fmag'];
+const SCALAR_MODES = ['charges', 'spins', 'unpaired', 'pauli', 'alpha', 'fmag'];
 
 function fmtSigned(v, d = 3) {
   const n = Math.abs(v) < 0.5 * 10 ** -d ? 0 : v;
@@ -120,6 +120,14 @@ export class Viewer {
     this.bonds = new Map(); this.schedule();
   }
   clear() { this.show({ frames: [], cell: null }); }
+  // Colour the atoms by one of the available modes (from the interpretation panel); ignored if the frame lacks it.
+  setColorMode(id) {
+    if (!this.colorModes.some(m => m.id === id)) return;
+    this.colorMode = id;
+    if (this.colorSel) this.colorSel.value = id;
+    this.legend.hidden = id !== 'element';
+    this.schedule();
+  }
 
   buildBar() {
     clear(this.bar);
@@ -187,6 +195,8 @@ export class Viewer {
     if (fr.charges && fr.charges.length === nb) parts.push(`q = ${fmtSigned(fr.charges[bi], 3)} e`);
     if (fr.spins && fr.spins.length === nb) parts.push(`s = ${fmtSigned(fr.spins[bi], 3)} e`);
     if (fr.alpha && fr.alpha.length === nb) parts.push(`α = ${Number(fr.alpha[bi]).toFixed(2)} Å³`);
+    if (fr.unpaired && fr.unpaired.length === nb) parts.push(`unpaired = ${Number(fr.unpaired[bi]).toFixed(3)}`);
+    if (fr.pauli && fr.pauli.length === nb) parts.push(`Pauli = ${Number(fr.pauli[bi]).toFixed(3)} eV`);
     const fm = this.rawScalars(fr, 'fmag');
     if (fm && fm.length === nb) parts.push(`|F| = ${Number(fm[bi]).toFixed(3)} eV/Å`);
     if (parts.length === 1 && this._hit.pos && this._hit.pos[a]) {

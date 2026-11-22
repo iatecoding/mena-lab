@@ -31,15 +31,11 @@ def pad_batch(b: GraphBatch, n_atoms: int, n_edges: int, n_graphs: int, r_cut: f
 
     pad_pos = torch.zeros(pa, 3, **fl)
     pad_pos[:, 0] = torch.arange(pa, **fl) * r_cut
-    # consecutive pad atoms, both directions, cycled to fill the edge cap
+    # consecutive pad atoms, receiver-sorted in O(pe) without argsort; distance is identically r_cut
     if pe > 0:
-        k = torch.arange(pe, **lg) % (2 * (pa - 1))
-        fwd = k < (pa - 1)
-        a = torch.where(fwd, k, k - (pa - 1))
-        send = torch.where(fwd, a, a + 1) + n0
-        recv = torch.where(fwd, a + 1, a) + n0
-        order = torch.argsort(recv, stable=True)   # real edges are receiver-sorted; keep the whole list sorted
-        pad_ei = torch.stack([send[order], recv[order]])
+        r_local = (torch.arange(pe, **lg) * pa) // pe
+        s_local = torch.where(r_local + 1 < pa, r_local + 1, r_local - 1)
+        pad_ei = torch.stack([s_local + n0, r_local + n0])
     else:
         pad_ei = torch.zeros(2, 0, **lg)
     f0 = int(b.frag_q.shape[0])
@@ -67,4 +63,84 @@ def pad_batch(b: GraphBatch, n_atoms: int, n_edges: int, n_graphs: int, r_cut: f
         frag_charge=None if b.frag_charge is None else cat(b.frag_charge, torch.zeros(pg, **fl)),
         frag_spin=None if b.frag_spin is None else cat(b.frag_spin, torch.ones(pg, **fl)),
         pbc=b.pbc,
+        spme_grid=b.spme_grid,
+        xc_id=None if b.xc_id is None else cat(b.xc_id, torch.zeros(pg, **lg)),
+        paw_id=None if b.paw_id is None else cat(b.paw_id, torch.zeros(pg, **lg)),
+        u_atom=None if b.u_atom is None else cat(b.u_atom, torch.zeros(pa, **lg)),
     )
+
+
+def periodic_two_bucket_epads(n_pad: int, max_e_pad: int | None = None, sparse_ratio: float = 0.45, e_sp: int = 0) -> tuple[int, int]:
+    """Return aligned `(e_pad_sparse, e_pad_dense)` for 2-bucket periodic batching (`sparse_periodic` vs `dense_bulk`)."""
+    align = lambda v: max(1024, ((int(v) + 1023) // 1024) * 1024)
+    dense = align(max_e_pad if (max_e_pad and max_e_pad > 0) else max(4096, int(n_pad) * 64))
+    raw_sp = int(e_sp) if int(e_sp) > 0 else max(4096, int(round(dense * float(sparse_ratio))))
+    sparse = min(dense, align(raw_sp))
+    return sparse, dense
+
+
+def classify_periodic_bucket(n_edges: int, e_pad_sparse: int, e_pad_dense: int) -> tuple[str, int]:
+    """Map real periodic edge count `n_edges` into `('sparse_periodic', e_pad_sparse)` or `('dense_bulk', e_pad_dense)`."""
+    if n_edges <= e_pad_sparse:
+        return "sparse_periodic", int(e_pad_sparse)
+    if n_edges <= e_pad_dense:
+        return "dense_bulk", int(e_pad_dense)
+    raise ValueError(f"periodic batch edges ({n_edges}) exceed dense_bulk e_pad ({e_pad_dense})")
+
+
+def active_edge_count(b: GraphBatch) -> int:
+    """Count real (non-pad) edges in a `pad_batch`-padded GraphBatch (real edges precede `z=0` pad edges)."""
+    if b.n_edges == 0:
+        return 0
+    real_dst = (b.z.index_select(0, b.edge_index[1]) > 0) & b.atom_mask.index_select(0, b.edge_index[1])
+    return int(real_dst.sum().item())
+
+
+def pad_periodic_batch(b: GraphBatch, n_atoms: int, e_pad_sparse: int, e_pad_dense: int, n_graphs: int, r_cut: float) -> tuple[str, GraphBatch]:
+    """Pad an unpadded periodic `GraphBatch` into either `sparse_periodic` or `dense_bulk` bucket."""
+    name, target_e = classify_periodic_bucket(b.n_edges, e_pad_sparse, e_pad_dense)
+    return name, pad_batch(b, n_atoms, target_e, n_graphs, r_cut)
+
+
+def repad_periodic_two_bucket(b: GraphBatch, e_pad_sparse: int, e_pad_dense: int, r_cut: float = 6.0, *, e_real: int | None = None) -> tuple[str, GraphBatch]:
+    """Repack an already-padded periodic batch cleanly to `sparse_periodic` when its real edges fit `e_pad_sparse`."""
+    from dataclasses import replace
+    n_real = active_edge_count(b) if e_real is None else int(e_real)
+    name, target_e = classify_periodic_bucket(n_real, e_pad_sparse, e_pad_dense)
+    if target_e == b.n_edges:
+        return name, b
+    if target_e > b.n_edges:
+        raise ValueError(f"cannot expand padded edges {b.n_edges} -> {target_e}")
+    return name, replace(b, edge_index=b.edge_index[:, :target_e].contiguous(), edge_shift=b.edge_shift[:target_e].contiguous())
+
+
+class TwoBucketStream:
+    """Wrap a periodic crystal stream so sparse structures compact to `e_pad_sparse` and dense ones stay in `e_pad_dense`."""
+
+    def __init__(self, inner, e_pad_sparse: int, e_pad_dense: int, r_cut: float = 6.0, *, log=print, log_every: int = 500) -> None:
+        self.inner, self.e_pad_sparse, self.e_pad_dense, self.r_cut = inner, int(e_pad_sparse), int(e_pad_dense), float(r_cut)
+        self.device = getattr(inner, "device", "cpu")
+        self._log, self._log_every = log, max(0, int(log_every))
+        self.n_draws = 0
+        self.n_sparse = 0
+
+    @property
+    def sparse_frac(self) -> float:
+        return self.n_sparse / self.n_draws if self.n_draws else 0.0
+
+    def next(self):
+        from dataclasses import replace
+        pk = self.inner.next()
+        name, b2 = repad_periodic_two_bucket(pk.batch, self.e_pad_sparse, self.e_pad_dense, self.r_cut, e_real=getattr(pk, "n_real_edges", None))
+        self.n_draws += 1
+        if name == "sparse_periodic":
+            self.n_sparse += 1
+        if self._log is not None and self._log_every and (self.n_draws in (50, 200) or self.n_draws % self._log_every == 0):
+            self._log(f"two_crystal_buckets: draws={self.n_draws} sparse_periodic={self.n_sparse} ({100.0 * self.sparse_frac:.1f}%) e_sp={self.e_pad_sparse} e_dn={self.e_pad_dense}")
+        return replace(pk, batch=b2) if b2 is not pk.batch else pk
+
+    def state(self) -> dict:
+        return self.inner.state()
+
+    def load(self, st: dict) -> None:
+        self.inner.load(st)

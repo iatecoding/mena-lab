@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import torch
 from torch import Tensor
@@ -29,14 +31,32 @@ def edges_from_mask(m: Tensor, n_atoms: Tensor) -> Tensor:
     return torch.stack([start[b] + j, start[b] + i])
 
 
+_VESIN_NL_TLS = threading.local()
+
+
 def vesin_edges(pos: np.ndarray, cell: np.ndarray, pbc, r_cut: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(sender j, receiver i, integer shift [E, 3]) of one structure, receiver-sorted (stable). pbc: bool or 3 bools; open structures use a zero box."""
     import vesin
 
     p = tuple(bool(x) for x in np.atleast_1d(pbc)) if np.size(pbc) == 3 else (bool(np.atleast_1d(pbc)[0]),) * 3
     box = np.asarray(cell, np.float64) if any(p) else np.zeros((3, 3))
-    i, j, s = vesin.NeighborList(cutoff=float(r_cut), full_list=True).compute(
+    cut = float(r_cut)
+    cache = getattr(_VESIN_NL_TLS, "cache", None)
+    if cache is None:
+        cache = {}
+        _VESIN_NL_TLS.cache = cache
+    nl = cache.get(cut)
+    if nl is None:
+        try:
+            nl = (vesin.NeighborList(cutoff=cut, full_list=True, sorted=True), True)
+        except TypeError:
+            nl = (vesin.NeighborList(cutoff=cut, full_list=True), False)
+        cache[cut] = nl
+    nl_obj, pre_sorted = nl
+    i, j, s = nl_obj.compute(
         points=np.asarray(pos, np.float64), box=box, periodic=p, quantities="ijS")
     i, j, s = np.asarray(i, np.int64), np.asarray(j, np.int64), np.asarray(s, np.int64)
+    if pre_sorted:
+        return j, i, s
     o = np.argsort(i, kind="stable")
     return j[o], i[o], s[o]

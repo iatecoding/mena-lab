@@ -1,100 +1,133 @@
-"""MDEngine: GPU-resident NVT molecular dynamics on top of MenaCalculator (`calc.md_engine(atoms, ...)`).
-
-Built from the calculator's own parts: `load_lam4_checkpoint` model (edge_mode auto -> Triton Dual-CSR on CUDA, optional bucketed post/finish
-compile), `verlet_neighbor_graph` + `build_or_reuse_batch` (receiver-sorted Verlet list, cached static GraphBatch), the trainer's `pad_batch`
-to a fixed edge capacity `e_cap` (pad atoms/edges are a physical no-op) so every tensor of the force call, including the CSRPlan buffers, keeps a
-static shape. Positions, momenta and the Nose-Hoover chain stay on the device (float64); per step there is no host work:
-
-  * a window of `window` steps (default 10, one recorded frame) is one CUDA-graph replay of the fixed-shape CSR forward+backward and the
-    integrator (`use_graph`), or, if capture is impossible, the same code run eagerly with the same device-resident state;
-  * stress is computed on the last step of each window only;
-  * the neighbour list is rebuilt on the host only when the largest displacement since the last build passes `rebuild_frac * skin / 2`;
-    a window in which any atom moved more than skin / 2 is rolled back and redone with a fresh list every step (exactness, as in the
-    reference engine); the one host sync per window is a packed read-back of (max displacement^2, energy, stress);
-  * memory is the Tier-2 memory: no dense [E, C] tensors, the plan is int32 `[N+1]`/`[E]` buffers.
-
-Pair energies beyond the ASE path are unchanged: energy = (E_net + E0) / CRYSTAL_EV with the same reference table as `calc.calculate`.
-Periodic systems only (crystals, molecular crystals); the cell is fixed (NVT).
-"""
+"""MDEngine: GPU-resident NVT/NVE molecular dynamics on top of MenaCalculator (`calc.md_engine(atoms, ...)`)."""
 from __future__ import annotations
 
 from contextlib import contextmanager
+import threading
 import time
-from typing import Any
+from typing import Any, Sequence
+import warnings
 
 import numpy as np
 import torch
 from ase.calculators.calculator import all_changes
 
-from lam4.calc.md_nhc import NHCState, integrate_nhc
-from lam4.calc.physics import (
-    CRYSTAL_EV,
-    MOL_KCAL_TO_EV,
-    effective_periodic_cell,
-    eval_dispersion_single,
-    resolve_charge_and_spin,
-    resolve_lot_and_u,
-)
-from lam4.calc.verlet import build_or_reuse_batch, verlet_neighbor_graph
-from lam4.data.padding import pad_batch
-from lam4.kernels.csr_plan import build_csr_plan
+from lam4.calc.d3_nl_cache import add_md_dispersion, has_triton_d3_on, rebuild_md_buffers
+from lam4.calc.md_nhc import get_fused_nhc_steps, integrate_nhc
+from lam4.calc import md_props as _mdp
+from lam4.calc.md_runner import init_md_engine_state, retarget_md_engine, sync_md_atoms
+from lam4.calc.physics import CRYSTAL_EV, MOL_KCAL_TO_EV, center_positions_f64, effective_periodic_cell, resolve_charge_and_spin, resolve_lot_and_u
+from lam4.calc.runtime import _max_mol_compile_atoms, _max_whole_compile_atoms, get_md_compiled_runner, precision_context
+from lam4.calc.verlet import warm_calc_caches
+from lam4.physics.coulomb_exact import resolve_coulomb_meta
+
+_NLH_TLS = threading.local()
+_NLH_LOCK = threading.Lock()
+
+
+def _has_triton_csr_bwd(dev: torch.device) -> bool:
+    if dev.type != "cuda":
+        return False
+    from lam4.kernels import triton_csr
+
+    fn = getattr(triton_csr, "has_triton_csr_backward", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(dev))
+    except TypeError:
+        return bool(fn())
+
+
+def _consts_handles_capture() -> bool:
+    from lam4.core import consts
+
+    code = getattr(consts.tracing, "__code__", None)
+    return code is not None and ("is_current_stream_capturing" in code.co_names or "capturing" in code.co_names)
 
 
 @contextmanager
 def _dense_nlh():
-    """Inside a graph capture `nlh_atom_energy` must not use its data-dependent `torch.nonzero` candidate filter: take the (identical-value) dense path."""
+    """No-op when `consts.tracing()` handles CUDA stream capture; thread-local fallback otherwise."""
+    if _consts_handles_capture():
+        yield
+        return
     import lam4.physics.repulsion as rep
-    saved = rep.tracing
-    rep.tracing = lambda: True
+
+    with _NLH_LOCK:
+        if not getattr(rep.tracing, "_tls_wrapped", False):
+            orig = rep.tracing
+            wrapped = lambda: bool(getattr(_NLH_TLS, "active", False)) or orig()
+            wrapped._tls_wrapped = True  # type: ignore[attr-defined]
+            rep.tracing = wrapped
+    prev = getattr(_NLH_TLS, "active", False)
+    _NLH_TLS.active = True
     try:
         yield
     finally:
-        rep.tracing = saved
+        _NLH_TLS.active = prev
+
+
+def _voigt_to_3x3(v: np.ndarray) -> np.ndarray:
+    return np.array([[v[0], v[5], v[4]], [v[5], v[1], v[3]], [v[4], v[3], v[2]]], dtype=np.float64)
 
 
 class MDEngine:
-    def __init__(self, calc, atoms, *, temperature_K: float, timestep_fs: float = 0.25, tdamp_fs: float = 25.0, skin: float = 0.6,
-                 window: int = 10, rebuild_frac: float = 0.5, use_graph: bool | str = "auto", seed: int = 0, maxwell: bool = True,
-                 headroom: float = 1.12) -> None:
-        from ase import units
-        from ase.md.nose_hoover_chain import NoseHooverChainNVT
-        from ase.md import velocitydistribution as _vd
+    STATIC_CHUNK_MAX_EDGES = 131_072
+    AUTO_GRAPH_MAX_ATOMS = 131_072
+    AUTO_GRAPH_MAX_EDGES = 8_500_000
 
+    def __init__(
+        self, calc, atoms, *, temperature_K: float | None = 300.0, timestep_fs: float = 0.25, tdamp_fs: float = 25.0, skin: float = 0.6,
+        window: int = 10, rebuild_frac: float = 0.5, use_graph: bool | str = "auto", use_compile: bool | str = "auto",
+        seed: int = 0, maxwell: bool = True, headroom: float = 1.12, _skip_init_eval: bool = False, record_properties: Sequence[str] = (),
+        ensemble: str = "nvt",
+    ) -> None:
         self.calc, self.model, self.dev = calc, calc.model, calc.device
         self.skin, self.window, self.rebuild_frac, self.headroom = float(skin), int(window), float(rebuild_frac), float(headroom)
         self.r_cut = float(self.model.cfg.r_cut)
-        self.atoms = atoms.copy()
-        if maxwell:
-            if hasattr(_vd, "thermalize_momenta"):
-                _vd.thermalize_momenta(self.atoms, temperature_K=temperature_K, rng=np.random.default_rng(seed))
-            else:
-                _vd.MaxwellBoltzmannDistribution(self.atoms, temperature_K=temperature_K, rng=np.random.default_rng(seed))
-        dyn = NoseHooverChainNVT(self.atoms, timestep=timestep_fs * units.fs, temperature_K=temperature_K, tdamp=tdamp_fs * units.fs)
-        self.st = NHCState.from_ase(dyn, self.dev)
+        self.ensemble, self.atoms, self.st, self._temperature_K, self._tdamp_fs = init_md_engine_state(
+            atoms, self.dev, ensemble=ensemble, temperature_K=temperature_K, timestep_fs=timestep_fs,
+            tdamp_fs=tdamp_fs, maxwell=maxwell, seed=seed,
+        )
+        self._origin_f64 = center_positions_f64(self.atoms.get_positions())[1]
         self.n = len(self.atoms)
         self.z_np = np.asarray(self.atoms.get_atomic_numbers(), dtype=np.int64)
         self.pbc_any = bool(np.any(self.atoms.get_pbc()))
-        self.src, self.u = resolve_lot_and_u(self.atoms, calc.lot, calc.u_override)
+        self.src, self.u = calc._resolve_lot_cached(self.atoms, self.z_np) if hasattr(calc, "_resolve_lot_cached") else resolve_lot_and_u(self.atoms, calc.lot, calc.u_override)
         self.qv, self.sv = resolve_charge_and_spin(self.atoms, calc.charge_override, calc.spin_override, pbc_any=self.pbc_any)
         self.cell_np, self.pbc = effective_periodic_cell(self.atoms, self.r_cut) if self.pbc_any else (None, (False, False, False))
         self.can_stress = bool(self.pbc_any and all(self.pbc) and self.cell_np is not None and abs(float(np.linalg.det(self.cell_np))) > 1e-8)
         self.kcal_to_ev = (1.0 / CRYSTAL_EV) if self.src.domain == "crystal" else MOL_KCAL_TO_EV
         self.d3_mode = self.src.d3_addback if calc.add_dispersion else None
-        self._d3_g0 = torch.zeros(self.n, dtype=torch.long, device=self.dev) if (self.d3_mode == "bj_wb97m" and not self.pbc_any) else None
+        self._d3_g0 = torch.zeros(self.n, dtype=torch.long, device=self.dev) if not self.pbc_any else None
         e0, eqs, _ = calc._ref_energies_kcal(self.src.name, self.src.domain, self.pbc_any, self.z_np, self.qv, self.sv)
         self.e_ref_kcal = float(e0 + eqs)
-        calc.skin = self.skin
-        # one standard calculator call first: runs the csr_check / compile_check parity oracles of run_model_checked (may fall back to
-        # ref) and keeps the reference E/F(/S) at the initial positions for correctness checks
-        a0 = self.atoms.copy()
-        a0.set_momenta(np.zeros((self.n, 3)))
-        init_props = ("energy", "forces", "stress") if self.can_stress else ("energy", "forces")
-        calc.calculate(a0, properties=init_props, system_changes=all_changes)
-        self.ref_results = {k: np.array(calc.results[k]) for k in init_props}
-        if not self.can_stress:
-            self.ref_results["stress"] = np.zeros(6, dtype=np.float64)
-        calc.reset()
-        self.is_csr = self.model.trunk.edge_mode == "csr"
+
+        need_csr_chk = bool(calc.model.trunk.edge_mode == "csr" and calc.csr_check and not calc._csr_checked)
+        if not _skip_init_eval or need_csr_chk:
+            saved_lot_cache = getattr(calc, "_lot_cache", None)
+            a0 = self.atoms.copy()
+            a0.set_momenta(np.zeros((self.n, 3)))
+            init_props = ("energy", "forces", "stress") if self.can_stress else ("energy", "forces")
+            calc.calculate(a0, properties=init_props, system_changes=all_changes)
+            self.ref_results = {k: np.array(calc.results[k], dtype=np.float64) for k in init_props}
+            s_voigt = np.asarray(self.ref_results.get("stress", np.zeros(6, dtype=np.float64)), dtype=np.float64).reshape(6)
+            self.ref_results["stress"], self.ref_results["stress_3x3"] = s_voigt, _voigt_to_3x3(s_voigt)
+            calc.reset()
+            if saved_lot_cache is not None:
+                calc._lot_cache = saved_lot_cache
+        else:
+            self.ref_results = {"stress": np.zeros(6, dtype=np.float64), "stress_3x3": np.zeros((3, 3), dtype=np.float64)}
+
+        self._traced_mode: str | None = None
+        if isinstance(use_compile, str) and use_compile.lower().startswith("traced"):
+            parts = use_compile.split(":", 1)
+            self._traced_mode = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "default"
+        self.is_csr = (self.model.trunk.edge_mode == "csr") and (self._traced_mode is None)
+        self._traced_ff = None
+        self._compiled_runner = None if self._traced_mode is not None else get_md_compiled_runner(calc, use_compile)
+        self._retargeted = False
+        self._prev_d = 0.0
         self.state_dt = torch.float32 if self.dev.type == "mps" else torch.float64
         fkw = dict(dtype=self.state_dt, device=self.dev)
         self.q_ref = self.st.q.clone()
@@ -103,252 +136,370 @@ class MDEngine:
         self.e = torch.zeros((), **fkw)
         self.s = torch.zeros(3, 3, **fkw)
         self.pb = self.plan = None
-        self.e_cap = 0
+        self.e_cap = self.d3_e_cap = 0
+        self.d3_rp = self.d3_send = self.d3_shift = None
         self.graph = None
         self.graph_error: str | None = None
-        self.want_graph = (
-            (self.dev.type == "cuda" and (self.d3_mode is None))
-            if use_graph == "auto"
-            else bool(use_graph)
-        )
+        self.compile_graph_error: str | None = None
+        self._nhc_kT_t = torch.tensor(float(self.st.kT), **fkw)
+        self._nhc_dt_t = torch.tensor(float(self.st.dt), **fkw)
+        self._nhc_n3_t = torch.tensor(float(3 * self.st.n_global), **fkw)
+        self._win_snap: list[torch.Tensor] | None = None
+        self._pack_buf = torch.zeros(11, **fkw)
+        self._auto_graph = use_graph == "auto"
+        self.want_graph = (self.dev.type == "cuda" and (self.d3_mode is None or self.can_graph_d3())) if self._auto_graph else bool(use_graph)
         self.stats = dict(rebuilds=0, rollbacks=0, regrows=0, windows=0, steps=0)
         self.frames: list[dict[str, Any]] = []
+        _mdp.init_md_record_properties(self, record_properties)
         with torch.no_grad():
             self._rebuild(initial=True)
-            self._forces_now()
+            if not _skip_init_eval:
+                self._forces_now()
 
-    # ---- neighbour list / static padded batch -----------------------------------------------------------------------
-    def _rebuild(self, initial: bool = False, q_np: np.ndarray | None = None) -> None:
-        q_np = self.st.q.detach().cpu().numpy() if q_np is None else q_np
-        self.calc._nl_cache = None
-        ei, es, _ = verlet_neighbor_graph(self.calc, self.z_np, q_np, self.cell_np, self.pbc)
-        if not self.is_csr and self.calc._nl_cache is not None:   # non-CSR modes return only the d0 <= r_cut edges: take the whole r_cut + skin list
-            ei, es = self.calc._nl_cache["ei"], self.calc._nl_cache["es"]
-        b, _, _ = build_or_reuse_batch(self.calc, self.z_np, q_np, self.cell_np, self.pbc, self.src, self.u, self.qv, self.sv, ei, es)
-        n_e = int(ei.shape[1])
-        self.e_cap_prev = self.e_cap
-        if initial or n_e > self.e_cap:
-            if not initial:
-                self.stats["regrows"] += 1
-                self.graph = None
-            self.e_cap = int(-(-int(n_e * self.headroom) // 256) * 256)
-            self.pb = pad_batch(b, self.n + 2, self.e_cap, 2, self.r_cut)
-            self.plan = build_csr_plan(self.pb.edge_index[1], self.pb.edge_index[0], self.n + 2) if self.is_csr else None
-        else:
-            nb = pad_batch(b, self.n + 2, self.e_cap, 2, self.r_cut)
-            self.pb.edge_index.copy_(nb.edge_index)
-            self.pb.edge_shift.copy_(nb.edge_shift)
-            for name in ("z", "u_flag", "token", "ref_id", "charge", "spin"):   # composition / Q / S may change between calls: in-place, graph stays valid
-                getattr(self.pb, name).copy_(getattr(nb, name))
-            if self.is_csr:
-                np_ = build_csr_plan(nb.edge_index[1], nb.edge_index[0], self.n + 2)
-                for name in ("recv_ptr", "send_idx", "recv_idx", "send_ptr", "send_perm"):
-                    getattr(self.plan, name).copy_(getattr(np_, name))
-        self._sync_chunks(fresh=initial or n_e > self.e_cap_prev)
+    def _configure_record_properties(self, record_properties: Sequence[str]) -> None: _mdp.configure_md_record_properties(self, record_properties)
+
+    def can_graph_d3(self) -> bool:
+        return bool(self.dev.type == "cuda" and self.calc.dtype == torch.float32 and self.d3_mode in ("bj_wb97m", "zero_pbe") and has_triton_d3_on(self.dev))
+
+    def can_metal_d3(self) -> bool:
+        if self.dev.type != "mps" or self.calc.dtype != torch.float32 or self.d3_mode not in ("bj_wb97m", "zero_pbe"):
+            return False
+        from lam4.kernels.metal_d3 import has_metal_d3
+
+        return bool(has_metal_d3())
+
+    def can_capture_graph(self) -> bool:
+        if self.dev.type != "cuda":
+            return False
+        # Monolithic multi-step CUDAGraph capture above ~131k atoms / ~8.5M edges doubles reserved VRAM and segfaults in replay().
+        if self._auto_graph and (self.n > self.AUTO_GRAPH_MAX_ATOMS or self.e_cap > self.AUTO_GRAPH_MAX_EDGES):
+            return False
+        csr_ok = (not self.is_csr) or _has_triton_csr_bwd(self.dev) or (self.e_cap <= self.STATIC_CHUNK_MAX_EDGES)
+        return bool(csr_ok and (self.d3_mode is None or self.can_graph_d3()))
+
+    def _warm_coulomb_meta(self) -> None:
+        if self.pb is not None and self.pb.domain == "molecule" and not self.pb.pbc:
+            resolve_coulomb_meta(self.pb, self.model.cfg.coulomb_cap)
+
+    def _finish_rebuild(self) -> None:
         self.q_ref.copy_(self.st.q)
         self.disp2.zero_()
+        self._prev_d = 0.0
         self.stats["rebuilds"] += 1
 
-    def retarget(self, atoms) -> None:
-        """Same atom count and cell, new composition / lot / charge / spin: refresh host-side keys used by the next `_rebuild`."""
-        self.z_np = np.asarray(atoms.get_atomic_numbers(), dtype=np.int64)
-        self.src, self.u = resolve_lot_and_u(atoms, self.calc.lot, self.calc.u_override)
-        self.qv, self.sv = resolve_charge_and_spin(atoms, self.calc.charge_override, self.calc.spin_override, pbc_any=self.pbc_any)
-        self.kcal_to_ev = (1.0 / CRYSTAL_EV) if self.src.domain == "crystal" else MOL_KCAL_TO_EV
-        self.d3_mode = self.src.d3_addback if self.calc.add_dispersion else None
-        e0, eqs, _ = self.calc._ref_energies_kcal(self.src.name, self.src.domain, self.pbc_any, self.z_np, self.qv, self.sv)
-        self.e_ref_kcal = float(e0 + eqs)
+    def _rebuild(self, initial: bool = False, q_np: np.ndarray | None = None) -> None:
+        if self._traced_mode is not None:
+            trunk = getattr(self.model, "trunk", None)
+            prev = getattr(trunk, "edge_mode", None)
+            try:
+                if trunk is not None:
+                    trunk.edge_mode = "ref"
+                rebuild_md_buffers(self, initial=initial, q_np=q_np)
+            finally:
+                if trunk is not None and prev is not None:
+                    trunk.edge_mode = prev
+            if self._traced_ff is not None and not self._traced_ff.matches(self.pb):
+                self._traced_ff = None
+            return
+        rebuild_md_buffers(self, initial=initial, q_np=q_np)
 
-    STATIC_CHUNK_MAX_EDGES = 131_072   # single-chunk CUDA backward up to this many padded edges (~2 GB worst case); above: per-list chunks, no graph reuse
+    def retarget(
+        self, atoms=None, *, temperature_K: float | None = None, timestep_fs: float | None = None, tdamp_fs: float | None = None,
+    ) -> None:
+        """Same atom count and cell: refresh composition/lot/charge/spin keys and/or timestep/thermostat params."""
+        if atoms is not None:
+            prev_sig = (self.src.domain, self.d3_mode)
+            self.z_np = np.asarray(atoms.get_atomic_numbers(), dtype=np.int64)
+            self.src, self.u = self.calc._resolve_lot_cached(atoms, self.z_np) if hasattr(self.calc, "_resolve_lot_cached") else resolve_lot_and_u(atoms, self.calc.lot, self.calc.u_override)
+            self.qv, self.sv = resolve_charge_and_spin(atoms, self.calc.charge_override, self.calc.spin_override, pbc_any=self.pbc_any)
+            self.kcal_to_ev = (1.0 / CRYSTAL_EV) if self.src.domain == "crystal" else MOL_KCAL_TO_EV
+            self.d3_mode = self.src.d3_addback if self.calc.add_dispersion else None
+            if self._d3_g0 is None and not self.pbc_any:
+                self._d3_g0 = torch.zeros(self.n, dtype=torch.long, device=self.dev)
+            if (self.src.domain, self.d3_mode) != prev_sig or (self.d3_mode is not None and not self.can_graph_d3()):
+                self.graph = None
+            e0, eqs, _ = self.calc._ref_energies_kcal(self.src.name, self.src.domain, self.pbc_any, self.z_np, self.qv, self.sv)
+            self.e_ref_kcal, self._retargeted = float(e0 + eqs), True
+        if temperature_K is not None or timestep_fs is not None or tdamp_fs is not None:
+            retarget_md_engine(self, temperature_K=temperature_K, timestep_fs=timestep_fs, tdamp_fs=tdamp_fs)
+            self._nhc_kT_t.fill_(float(self.st.kT))
+            self._nhc_dt_t.fill_(float(self.st.dt))
+            self._nhc_n3_t.fill_(float(3 * self.st.n_global))
 
     def _sync_chunks(self, fresh: bool) -> None:
-        """CUDA streaming VJP: one static chunk (all atoms, e_cap edges) updated in place, so the backward has no host sync and the graph stays valid."""
         if not self.is_csr or self.dev.type != "cuda":
             return
+        if _has_triton_csr_bwd(self.dev):
+            self.plan.chunks = None
+            return
         if self.e_cap > self.STATIC_CHUNK_MAX_EDGES:
-            self.plan.chunks = None   # per-list host chunks: a captured graph holds the old chunk tensors, so recapture after every rebuild
-            self.graph = None
+            self.plan.chunks, self.graph = None, None
             return
         recv_l, send_l = self.plan.recv_idx.to(torch.long), self.plan.send_idx.to(torch.long)
         if fresh or not self.plan.chunks:
             from lam4.core.edge_chunks import Chunk
+
             n_pad = self.n + 2
             self.plan.chunks = [Chunk(0, n_pad, 0, self.e_cap, recv_l, send_l, torch.arange(n_pad, device=self.dev))]
         else:
             self.plan.chunks[0].recv.copy_(recv_l)
             self.plan.chunks[0].send.copy_(send_l)
 
-    # ---- force call (static shapes; grad only inside) ----------------------------------------------------------------
     def _forces(self, need_stress: bool):
+        from lam4.core.consts import capturing
+
         eff_stress = bool(need_stress and self.can_stress)
         self.pb.pos[: self.n].copy_(self._q_cur)
-        with torch.enable_grad():
-            out = self.model(self.pb, create_graph=False, compute_forces=True, compute_stress=eff_stress, chunks=None,
-                             add_ref=False, return_stage_energies=False, csr_plan=self.plan)
-        k = self.kcal_to_ev
-        sdt = self.state_dt
-        e_kcal = out["energy"][0].detach().to(sdt)
-        f_kcal = out["forces"][: self.n].detach().to(sdt)
+        k, sdt = self.kcal_to_ev, self.state_dt
+        if self._traced_mode is not None and not self._want_props:
+            try:
+                if self._traced_ff is None or not self._traced_ff.matches(self.pb):
+                    from lam4.calc.md_traced import TracedMDForceField
+
+                    self._traced_ff = TracedMDForceField(
+                        self.model, self.pb, compute_stress=self.can_stress, compile_mode=self._traced_mode,
+                        precision=getattr(self.calc, "precision", "fp32_ieee"), dense_nlh_ctx=_dense_nlh,
+                    )
+                with precision_context(getattr(self.calc, "precision", "auto"), self.dev, self.model):
+                    e_t, f_t, s_t = self._traced_ff(self.pb.pos, self.pb.edge_index, self.pb.edge_shift)
+                e_kcal, f_kcal = e_t[0].detach().to(sdt), f_t[: self.n].detach().to(sdt)
+                s_kcal = s_t[0].detach().to(sdt) if (eff_stress and s_t is not None) else None
+                if self.d3_mode is not None:
+                    e_kcal, f_kcal, s_kcal = add_md_dispersion(self, e_kcal, f_kcal, s_kcal, eff_stress)
+                f = f_kcal * k
+                if self.calc.zero_net_force and self.n > 0:
+                    f = f - f.mean(dim=0, keepdim=True)
+                s = ((s_kcal * k) if (eff_stress and s_kcal is not None) else torch.zeros_like(self.s)) if need_stress else None
+                return e_kcal, f, s
+            except Exception as exc:  # noqa: BLE001
+                if capturing():
+                    raise
+                self.compile_graph_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+                warnings.warn(f"MDEngine traced force field failed ({exc}); falling back to eager.", RuntimeWarning)
+                self._traced_mode = self._traced_ff = None
+        use_c = (
+            self._compiled_runner is not None and (self.is_csr or self.dev.type == "cpu") and self.pb.n_atoms <= _max_whole_compile_atoms(self.calc, self.dev)
+            and not (self.pb.domain == "molecule" and not self.pb.pbc and self.pb.n_atoms > _max_mol_compile_atoms(self.dev))
+        )
+        with precision_context(getattr(self.calc, "precision", "auto"), self.dev, self.model), torch.enable_grad():
+            if use_c:
+                try:
+                    out = self._compiled_runner(self.pb, self.plan, need_forces=True, need_stress=eff_stress)
+                except Exception as exc:  # noqa: BLE001
+                    if capturing():
+                        raise
+                    self.compile_graph_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+                    warnings.warn(f"MDEngine compiled forward failed ({exc}); falling back to eager.", RuntimeWarning)
+                    self._compiled_runner = None
+                    out = self.model(
+                        self.pb, create_graph=False, compute_forces=True, compute_stress=eff_stress,
+                        chunks=None, add_ref=False, return_stage_energies=False, csr_plan=self.plan,
+                        return_phi=False, return_aux_heads=bool(self._want_props),
+                    )
+            else:
+                out = self.model(
+                    self.pb, create_graph=False, compute_forces=True, compute_stress=eff_stress,
+                    chunks=None, add_ref=False, return_stage_energies=False, csr_plan=self.plan,
+                    return_phi=False, return_aux_heads=bool(self._want_props),
+                )
+        e_kcal, f_kcal = out.get("energy_f64", out["energy"])[0].detach().to(sdt), out["forces"][: self.n].detach().to(sdt)
         s_kcal = out["stress"][0].detach().to(sdt) if eff_stress else None
         if self.d3_mode is not None:
-            if self.dev.type == "mps" and not self.pbc_any and self.d3_mode == "bj_wb97m" and self.n <= 1024:
-                from lam4.kernels.metal_d3 import has_metal_d3, metal_d3_grouped
-
-                if has_metal_d3():
-                    ed3, fd3 = metal_d3_grouped(self.pb.z[: self.n], self.pb.pos[: self.n], self._d3_g0, 1, compute_forces=True)
-                    e_kcal = e_kcal + ed3[0].to(sdt)
-                    if fd3 is not None:
-                        f_kcal = f_kcal + fd3.to(sdt)
-                else:
-                    q_np = self._q_cur.detach().cpu().to(torch.float64).numpy()
-                    de, df, _ = eval_dispersion_single(self.z_np, q_np, self.cell_np, self.pbc, self.d3_mode, self.dev, self.calc.dtype, compute_forces=True)
-                    e_kcal = e_kcal + de
-                    if df is not None:
-                        f_kcal = f_kcal + torch.from_numpy(df).to(self.dev, sdt)
-            else:
-                q_np = self._q_cur.detach().cpu().to(torch.float64).numpy()
-                de, df, ds = eval_dispersion_single(
-                    self.z_np, q_np, self.cell_np, self.pbc, self.d3_mode, self.dev, self.calc.dtype,
-                    compute_forces=True, compute_stress=eff_stress,
-                )
-                e_kcal = e_kcal + de
-                if df is not None:
-                    f_kcal = f_kcal + torch.from_numpy(df).to(self.dev, sdt)
-                if eff_stress and ds is not None and s_kcal is not None:
-                    s_kcal = s_kcal + torch.from_numpy(ds).to(self.dev, sdt)
+            e_kcal, f_kcal, s_kcal = add_md_dispersion(self, e_kcal, f_kcal, s_kcal, eff_stress)
         f = f_kcal * k
-        if need_stress:
-            s = (s_kcal * k) if (eff_stress and s_kcal is not None) else torch.zeros_like(self.s)
-        else:
-            s = None
+        if self.calc.zero_net_force and self.n > 0:
+            f = f - f.mean(dim=0, keepdim=True)
+        s = ((s_kcal * k) if (eff_stress and s_kcal is not None) else torch.zeros_like(self.s)) if need_stress else None
+        if self._want_props: _mdp.capture_step_properties(self, out)
         return e_kcal, f, s
 
     def _forces_now(self) -> None:
         self._q_cur = self.st.q
         e, f, s = self._forces(need_stress=True)
-        self.f.copy_(f)
-        self.e.copy_(e)
-        self.s.copy_(s)
+        self.f.copy_(f); self.e.copy_(e); self.s.copy_(s)
+        if self._want_props: _mdp.flush_step_properties(self)
 
-    # ---- one window of integrator steps (ASE NoseHooverChainNVT.step) -------------------------------------------------
-    def _window_body(self, nsteps: int) -> None:
-        st = self.st
-        dt, dt2 = st.dt, st.dt / 2
+    def _window_body(self, nsteps: int, win_offset: int = 0) -> None:
+        st, dt, dt2, is_nvt = self.st, self.st.dt, self.st.dt / 2, self.ensemble == "nvt"
+        use_fused_nhc = bool(is_nvt and st.tchain == 3 and st.tloop == 1 and self.dev.type == "cuda")
         q, p, eta, f = st.q, st.p, st.eta, self.f
-        p_eta = list(st.p_eta.unbind(0))
         e = s = None
         with torch.no_grad():
-            for i in range(nsteps):
-                p, p_eta, eta = integrate_nhc(st, p, p_eta, eta, dt2)
-                p = p + dt2 * f
-                q = q + dt * p / st.masses
-                self._q_cur = q
-                e, f, s = self._forces(need_stress=(i == nsteps - 1))
-                p = p + dt2 * f
-                p, p_eta, eta = integrate_nhc(st, p, p_eta, eta, dt2)
-                self.disp2.copy_(torch.maximum(self.disp2, ((q - self.q_ref) ** 2).sum(1).max()))
-            st.q.copy_(q)
-            st.p.copy_(p)
-            st.eta.copy_(eta)
-            st.p_eta.copy_(torch.stack(p_eta))
-            self.f.copy_(f)
-            self.e.copy_(e)
-            self.s.copy_(s)
+            if use_fused_nhc:
+                pre_step, post_step = get_fused_nhc_steps(self.dev)
+                pe, disp2 = st.p_eta, self.disp2
+                for i in range(nsteps):
+                    q, p, pe, eta = pre_step(q, p, f, pe, eta, st.masses, st.Q_t, self._nhc_kT_t, self._nhc_dt_t, self._nhc_n3_t)
+                    self._q_cur = q
+                    e, f, s = self._forces(need_stress=(i == nsteps - 1))
+                    p, pe, eta, disp2 = post_step(p, f, pe, eta, st.masses, st.Q_t, self._nhc_kT_t, self._nhc_dt_t, self._nhc_n3_t, q, self.q_ref, disp2)
+                    if self._want_props: _mdp.record_win_step_properties(self, win_offset + i)
+                st.q.copy_(q); st.p.copy_(p); st.eta.copy_(eta); st.p_eta.copy_(pe); self.disp2.copy_(disp2)
+            else:
+                p_eta = list(st.p_eta.unbind(0)) if is_nvt else []
+                for i in range(nsteps):
+                    if is_nvt: p, p_eta, eta = integrate_nhc(st, p, p_eta, eta, dt2)
+                    p = p + dt2 * f
+                    q = q + dt * p / st.masses
+                    self._q_cur = q
+                    e, f, s = self._forces(need_stress=(i == nsteps - 1))
+                    p = p + dt2 * f
+                    if is_nvt: p, p_eta, eta = integrate_nhc(st, p, p_eta, eta, dt2)
+                    self.disp2.copy_(torch.maximum(self.disp2, ((q - self.q_ref) ** 2).sum(1).max()))
+                    if self._want_props: _mdp.record_win_step_properties(self, win_offset + i)
+                st.q.copy_(q); st.p.copy_(p)
+                if is_nvt: st.eta.copy_(eta); st.p_eta.copy_(torch.stack(p_eta))
+            self.f.copy_(f); self.e.copy_(e); self.s.copy_(s)
+            self._pack_buf[0].copy_(self.disp2); self._pack_buf[1].copy_(self.e); self._pack_buf[2:].copy_(self.s.reshape(-1))
+            if self._want_props: _mdp.flush_step_properties(self)
 
     def _state_tensors(self):
-        return (self.st.q, self.st.p, self.st.eta, self.st.p_eta, self.f, self.e, self.s, self.q_ref, self.disp2)
+        return (self.st.q, self.st.p, self.st.eta, self.st.p_eta, self.f, self.e, self.s, self.q_ref, self.disp2, *_mdp.extra_state_tensors(self))
 
     def _snapshot(self):
         return [t.clone() for t in self._state_tensors()]
+
+    def _snapshot_win(self):
+        st = self._state_tensors()
+        if self._win_snap is None or len(self._win_snap) != len(st):
+            self._win_snap = [t.clone() for t in st]
+        else:
+            for dst, src in zip(self._win_snap, st):
+                dst.copy_(src)
+        return self._win_snap
 
     def _restore(self, snap) -> None:
         for dst, src in zip(self._state_tensors(), snap):
             dst.copy_(src)
 
+    def _capture_once(self, snap, n_warm: int):
+        with torch.cuda.device(self.dev):
+            side = torch.cuda.Stream(device=self.dev)
+            side.wait_stream(torch.cuda.current_stream(self.dev))
+            with torch.cuda.stream(side):
+                for _ in range(n_warm):
+                    self._window_body(min(self.window, 2))
+                    self._restore(snap)
+            g = torch.cuda.CUDAGraph()
+            with _dense_nlh(), torch.cuda.graph(g, stream=side, capture_error_mode="thread_local"):
+                self._window_body(self.window)
+            torch.cuda.current_stream(self.dev).wait_stream(side)
+            return g
+
     def _capture(self) -> None:
         snap = self._snapshot()
+        warm_calc_caches(self.calc, self.dev, self.n, self.n + 2)
+        self._warm_coulomb_meta()
         try:
-            self._capture_inner(snap)
+            if self._compiled_runner is not None or self._traced_mode is not None:
+                try:
+                    self.graph = self._capture_once(snap, 2)
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    self.compile_graph_error = f"{type(exc).__name__}: {str(exc)[:240]}"
+                    torch.cuda.synchronize(self.dev)
+                    self._restore(snap)
+                    self._compiled_runner = None
+                    if self._traced_mode is not None:
+                        self._traced_mode, self._traced_ff = None, None
+            self.graph = self._capture_once(snap, 1)
         finally:
             self._restore(snap)
 
-    def _capture_inner(self, snap) -> None:
-        side = torch.cuda.Stream()
-        side.wait_stream(torch.cuda.current_stream())
-        with _dense_nlh():
-            with torch.cuda.stream(side):
-                for _ in range(2):   # warm-up on a side stream (Triton compile, allocator, cuBLAS handles), state restored after each
-                    self._window_body(self.window)
-                    self._restore(snap)
-            torch.cuda.current_stream().wait_stream(side)
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g, capture_error_mode="thread_local"):
-                self._window_body(self.window)
-        self.graph = g
-
     def _run_window(self) -> None:
-        if self.want_graph and self.graph_error is None:
+        if self.want_graph and self.graph_error is None and self.can_capture_graph():
             if self.graph is None:
                 try:
                     self._capture()
-                except Exception as exc:   # capture impossible: eager window, same device-resident state
+                except Exception as exc:
                     import traceback
+
                     self.graph, self.graph_error = None, f"{type(exc).__name__}: {str(exc)[:200]} @ {traceback.format_exc()[-900:]}"
-                    torch.cuda.synchronize()
+                    if self.dev.type == "cuda":
+                        torch.cuda.synchronize(self.dev)
                     return self._run_window()
-            self.graph.replay()
+            with torch.cuda.device(self.dev):
+                self.graph.replay()
         else:
             self._window_body(self.window)
 
+    def _pack_d2_e_s(self) -> np.ndarray:
+        return self._pack_buf.cpu().numpy()
+
     def window_step(self) -> None:
-        """Advance `window` steps; roll back and redo with a rebuild per step if any atom passed skin / 2."""
-        snap = self._snapshot()
+        if self._retargeted:
+            self._rebuild()
+            self._forces_now()
+        d0, snap = self._prev_d, self._snapshot_win()
         self._run_window()
-        packed = torch.cat([self.disp2.view(1), self.e.view(1), self.s.reshape(-1)]).cpu().numpy()   # the window's one host sync
-        d2 = float(packed[0])
-        if d2 > (0.5 * self.skin) ** 2:
+        packed = self._pack_d2_e_s()
+        d2, half_s = float(packed[0]), 0.5 * self.skin
+        reb_d2 = (self.rebuild_frac * half_s) ** 2
+        if d2 > half_s * half_s:
             self.stats["rollbacks"] += 1
             self._restore(snap)
-            for _ in range(self.window):
+            if d0 > 0.0:
                 self._rebuild()
-                self._window_body(1)
-            packed = torch.cat([self.disp2.view(1), self.e.view(1), self.s.reshape(-1)]).cpu().numpy()
-            d2 = float(packed[0])
-        if d2 > (self.rebuild_frac * 0.5 * self.skin) ** 2:
+                self._run_window()
+                packed = self._pack_d2_e_s()
+                d2 = float(packed[0])
+            if d2 > half_s * half_s:
+                if d0 > 0.0:
+                    self._restore(snap)
+                self._rebuild()
+                for step_i in range(self.window):
+                    self._window_body(1, win_offset=step_i)
+                    if float(self.disp2) > reb_d2:
+                        self._rebuild()
+                packed = self._pack_d2_e_s()
+                d2 = float(packed[0])
+        d_cur = float(np.sqrt(max(d2, 0.0)))
+        if d2 > reb_d2 or (d_cur + 1.25 * max(d_cur - d0, 0.0) > half_s):
             self._rebuild()
+        else:
+            self._prev_d = d_cur
         self.stats["windows"] += 1
         self.stats["steps"] += self.window
         self._last = packed
 
-    def run(self, n_steps: int, record: bool = False) -> dict[str, Any]:
-        """Run `n_steps` (rounded up to whole windows). Returns timing; `record=True` keeps one host frame per window."""
+    def run(self, n_steps: int, record: bool = False, record_properties: Sequence[str] | None = None) -> dict[str, Any]:
+        if record_properties is not None: self._configure_record_properties(record_properties)
         n_win = -(-int(n_steps) // self.window)
-        sync = torch.cuda.synchronize if self.dev.type == "cuda" else (lambda: None)
+        sync = (lambda: torch.cuda.synchronize(self.dev)) if self.dev.type == "cuda" else (lambda: None)
         sync()
         t0 = time.perf_counter()
         for _ in range(n_win):
             self.window_step()
-            if record:
-                self.frames.append(dict(step=self.stats["steps"], positions=self.st.q.cpu().numpy(), energy=self.energy_ev(),
-                                        forces=self.f.cpu().numpy(), stress=self.s.cpu().numpy()))
+            prop_w = _mdp.collect_window_properties(self) if self._want_props else None
+            if record: _mdp.append_recorded_frame(self, prop_w)
         sync()
-        dt = time.perf_counter() - t0
-        steps = n_win * self.window
-        return dict(steps=steps, seconds=dt, ms_per_step=1000.0 * dt / steps, atoms_per_s=self.n * steps / dt)
+        dt, steps = time.perf_counter() - t0, n_win * self.window
+        return dict(steps=steps, seconds=dt, ms_per_step=1000.0 * dt / steps, atoms_per_s=self.n * steps / max(dt, 1e-12))
 
-    # ---- results -------------------------------------------------------------------------------------------------------
-    def energy_ev(self) -> float:
-        return (float(self.e) + self.e_ref_kcal) * self.kcal_to_ev
+    def sync_atoms(self, atoms=None):
+        """Sync device positions & momenta back to `atoms` (default `self.atoms`) and clear stale ASE calc cache."""
+        return sync_md_atoms(self, atoms)
 
-    def positions(self) -> np.ndarray:
-        return self.st.q.cpu().numpy()
+    def energy_ev(self) -> float: return (float(self.e) + self.e_ref_kcal) * self.kcal_to_ev
+    def positions(self) -> np.ndarray: return np.asarray(self.st.q.detach().cpu().to(torch.float64).numpy(), dtype=np.float64) + self._origin_f64
+    def forces(self) -> np.ndarray: return self.f.cpu().numpy()
+    def stress_ev_a3(self) -> np.ndarray: return self.s.cpu().numpy()
 
-    def forces(self) -> np.ndarray:
-        return self.f.cpu().numpy()
+    def stress_voigt(self) -> np.ndarray:
+        s33 = np.asarray(self.s.cpu().numpy(), dtype=np.float64)
+        return s33[[0, 1, 2, 1, 0, 0], [0, 1, 2, 2, 2, 1]]
 
-    def stress_ev_a3(self) -> np.ndarray:
-        return self.s.cpu().numpy()
+    def dipole(self) -> np.ndarray: return _mdp.current_dipole(self)
+    def dipole_debye(self) -> np.ndarray: return _mdp.current_dipole_debye(self)
+    def polarizability(self) -> np.ndarray: return _mdp.current_pol_tuple(self)[0]
+    def polarizability_iso(self) -> float: return float(_mdp.current_pol_tuple(self)[1])
+    def polarizability_aniso(self) -> float: return float(_mdp.current_pol_tuple(self)[2])
+    def trajectory_properties(self) -> dict[str, np.ndarray]: return {k: np.concatenate(c, axis=0) for k, c in self._prop_history.items() if c}
 
     def info(self) -> dict[str, Any]:
-        return dict(n_atoms=self.n, e_cap=self.e_cap, csr=self.is_csr, graph=self.graph is not None, graph_error=self.graph_error,
-                    **self.stats)
+        return dict(
+            n_atoms=self.n, e_cap=self.e_cap, csr=self.is_csr,
+            compiled=bool(self._compiled_runner is not None or self._traced_ff is not None),
+            traced=self._traced_ff is not None,
+            graph=self.graph is not None, graph_error=self.graph_error, compile_graph_error=self.compile_graph_error, **self.stats,
+        )

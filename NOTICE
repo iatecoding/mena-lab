@@ -45,6 +45,8 @@ Training data of the model weights
 The weights were trained on the following public datasets. We thank their
 authors; please cite them when you use the models.
 
+  Mena-LAM-6 (mena-lam6-v1.pt): OMol25, MPtrj, sAlex, OMat24, MatPES,
+    OC20, OC25, MAD-1.6, OMC25, SPICE 2
   Mena-LAM-s (mena-lam5-v1.pt): OMol25, OMC25, OMat24, sAlex, MPtrj, MatPES,
     OC20, OC22, OpenRxn26, SPICE 2
   Mena-LAM-preview (mena-lam-400k.pt): OMat24, sAlex, MPtrj, MatPES, OMol25

@@ -51,16 +51,19 @@ class Plan:
         return 1 + 2 * sum(len(d) for d in self.directions.values())
 
 
-def symmetry_plan(atoms, k: int, offset: int = 0, symprec: float = SYMPREC) -> Plan | None:
+def symmetry_plan(atoms, k: int, offset: int = 0, symprec: float = SYMPREC, *, dataset: dict | None = None) -> Plan | None:
     """None when the crystal has only the identity operation (then the full 6N + 1 method is as cheap)."""
     from mena_app.crystal_symmetry import find_crystal_symmetry
 
     cell = np.asarray(atoms.cell.array, float)
     frac = atoms.get_scaled_positions(wrap=False)  # unwrapped: ASE's supercell atom (m, p) sits at frac[p] + m exactly
-    try:
-        ds = find_crystal_symmetry(cell, frac, atoms.numbers, symprec=symprec)
-    except Exception:  # noqa: BLE001
-        return None
+    if dataset is not None:
+        ds = dataset
+    else:
+        try:
+            ds = find_crystal_symmetry(cell, frac, atoms.numbers, symprec=symprec)
+        except Exception:  # noqa: BLE001
+            return None
     if ds is None:
         return None
     rots, trans = np.asarray(ds["rotations"]), np.asarray(ds["translations"])
@@ -68,17 +71,28 @@ def symmetry_plan(atoms, k: int, offset: int = 0, symprec: float = SYMPREC) -> P
         return None
     n = len(atoms)
     G = len(rots)
-    perm = np.empty((G, n), int)
-    lat = np.empty((G, n, 3), int)
-    for g in range(G):
-        img = frac @ rots[g].T + trans[g]                       # [n, 3]
-        diff = img[:, None, :] - frac[None, :, :]               # [n, n, 3]
-        dist = np.abs(diff - np.round(diff)) @ np.abs(cell)     # rough Cartesian size of the residual
-        q = dist.max(-1).argmin(1) if n > 1 else np.zeros(1, int)
-        res = diff[np.arange(n), q]
-        if np.abs(res - np.round(res)).max() > 10 * symprec / max(np.linalg.norm(cell, axis=1).min(), 1e-9) + 1e-6:
+    tol_frac = 10 * symprec / max(np.linalg.norm(cell, axis=1).min(), 1e-9) + 1e-6
+    perms_in = ds.get("perms")
+    if perms_in is not None and len(perms_in) == G and np.asarray(perms_in).shape == (G, n):
+        perm = np.asarray(perms_in, dtype=int)
+        img = np.einsum("nj,gij->gni", frac, rots) + trans[:, None, :]
+        res = img - frac[perm]
+        lat_arr = np.round(res)
+        if float(np.abs(res - lat_arr).max()) > tol_frac:
             return None
-        perm[g], lat[g] = q, np.round(res).astype(int)
+        lat = lat_arr.astype(int)
+    else:
+        perm = np.empty((G, n), int)
+        lat = np.empty((G, n, 3), int)
+        for g in range(G):
+            img = frac @ rots[g].T + trans[g]                       # [n, 3]
+            diff = img[:, None, :] - frac[None, :, :]               # [n, n, 3]
+            dist = np.abs(diff - np.round(diff)) @ np.abs(cell)     # rough Cartesian size of the residual
+            q = dist.max(-1).argmin(1) if n > 1 else np.zeros(1, int)
+            res = diff[np.arange(n), q]
+            if np.abs(res - np.round(res)).max() > tol_frac:
+                return None
+            perm[g], lat[g] = q, np.round(res).astype(int)
     cT = cell.T
     rot_cart = np.einsum("ij,gjk,kl->gil", cT, rots, np.linalg.inv(cT))
     orbit_of = np.asarray(ds["equivalent_atoms"])

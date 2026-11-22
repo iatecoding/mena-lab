@@ -58,6 +58,8 @@ def all_models() -> list[dict]:
         srcs.append((Path(os.environ["MENA_MODELS"]), Path.home()))
     for f, base in srcs:
         for e in _read(f):
+            if not isinstance(e, dict) or not e.get("id"):
+                continue
             resolved = _resolve(e, base)
             prev = found.get(e["id"])
             found[e["id"]] = {**prev, **resolved} if prev else resolved
@@ -72,17 +74,27 @@ VALID_DOMAINS = ("molecule", "crystal", "slab")
 
 DEFAULT_LOTS = {
     "lam": ["mp_pbe", "mp_pbeU", "omat_pbe", "omat_pbeU", "matpes_pbe", "matpes_r2scan", "omol_wb97mv"],
-    # distinct, validated levels of theory only: omat_pbe / matpes_pbe share mp_pbe's state, omat_pbeU shares mp_pbeU's,
-    # and openrxn_wb97xd / spice_wb97md3 give unreliable forces on molecules
+    # distinct, validated levels of theory only: omat_pbe / matpes_pbe share mp_pbe's state on lam5, omat_pbeU shares mp_pbeU's,
+    # and openrxn_wb97xd / spice_wb97md3 give unreliable forces on lam5 molecules
     "lam4": ["mp_pbe", "mp_pbeU", "matpes_r2scan", "oc20_rpbe", "oc22_pbeU", "omc25_pbe", "omol_wb97mv"],
 }
+
+LAM6_DEFAULT_LOTS = [
+    "mp_pbe", "mp_pbeU", "omat_pbe", "omat_pbeU", "matpes_pbe", "matpes_r2scan",
+    "oc20_rpbe", "oc25_rpbe", "mad16_r2scan", "omc25_pbe", "omol_wb97mv", "spice_wb97md3",
+]
+
+
+def _is_lam6_entry(model_id: str, path: str) -> bool:
+    low = f"{model_id} {Path(path).name} {Path(path).parent.name}".lower()
+    return "lam6" in low
 
 
 def _infer_backend(model_id: str, path: str, shipped: dict | None) -> str:
     if shipped and shipped.get("backend") in DEFAULT_LOTS:
         return shipped["backend"]
-    low = f"{model_id} {Path(path).name}".lower()
-    if "lam5" in low or "lam4" in low:
+    low = f"{model_id} {Path(path).name} {Path(path).parent.name}".lower()
+    if "lam6" in low or "lam5" in low or "lam4" in low:
         return "lam4"
     return "lam"
 
@@ -102,8 +114,9 @@ def add(model_id: str, path: str, code_root: str | None = None, domains: list[st
         eff_domains = list(shipped["domains"])
     else:
         eff_domains = ["molecule", "crystal", "slab"]
+    is_lam6 = eff_backend == "lam4" and _is_lam6_entry(model_id, path)
     f = user_file()
-    rows = [e for e in _read(f) if e["id"] != model_id]
+    rows = [e for e in _read(f) if e.get("id") != model_id]
     e: dict = dict(shipped) if shipped else {}
     e.update({
         "id": model_id,
@@ -111,10 +124,12 @@ def add(model_id: str, path: str, code_root: str | None = None, domains: list[st
         "path": str(Path(path).expanduser().resolve()),
         "backend": eff_backend,
         "domains": eff_domains,
-        "lots": list(DEFAULT_LOTS[eff_backend]),
+        "lots": list(LAM6_DEFAULT_LOTS if is_lam6 else DEFAULT_LOTS[eff_backend]),
         "dtypes": ["float32", "float64"],
         "low_memory": True,
     })
+    if is_lam6 and "rank" not in e:
+        e["rank"] = {"crystal": 0, "slab": 0, "molecule": 1}
     if code_root:
         e["code_root"] = str(Path(code_root).expanduser().resolve())
     elif "code_root" in e:
@@ -134,6 +149,9 @@ def _usable(m: dict) -> bool:
 def _missing(m: dict) -> ModelError:
     if m.get("unsupported"):
         return ModelError(f"{m['id']}: {m['unsupported']}")
+    if m.get("release") == "preview" and not weights.downloadable(m):
+        return ModelError(f"{m.get('title', m['id'])} ({m['id']}) is a preview: its weights are not published yet. "
+                          f"Put the file at {m.get('path')} or run `mena models add {m['id']} PATH`.")
     return ModelError(f"the file of model {m['id']!r} is missing: {m.get('path')} "
                       f"(run `mena models download {m['id']}` or `mena models add {m['id']} PATH`)")
 

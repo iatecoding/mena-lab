@@ -77,13 +77,34 @@ def working_atoms(spec: dict, analysis: dict) -> tuple[int, int]:
     return analysis["n_atoms"], analysis["edges"]
 
 
-MOLECULAR_LOTS = {"omol_wb97mv", "openrxn_wb97xd", "spice_wb97md3"}
+MOLECULAR_LOTS = {
+    "omol_wb97mv", "openrxn_wb97xd", "spice_wb97md3",
+    "opoly26_wb97mv", "mad16_r2scan_mol", "t1x_wb97x", "rgd1_b3lyp",
+    "qcml_pbe0", "tmqm_tpssh", "splinter_sapt0", "splinter_aug",
+}
+LOT_ALIASES = {
+    "mp_pbe52": "mp_pbe", "mp_pbe52u": "mp_pbeU",
+    "omat_pbe54": "omat_pbe", "omat_pbe54u": "omat_pbeU",
+    "matpes_pbe64": "matpes_pbe", "r2scan": "matpes_r2scan",
+    "rpbe": "oc20_rpbe", "oc20": "oc20_rpbe", "oc25": "oc25_rpbe",
+    "mad": "mad16_r2scan", "mad16": "mad16_r2scan",
+    "omol": "omol_wb97mv", "omol25": "omol_wb97mv", "wb97mv": "omol_wb97mv",
+    "opoly": "opoly26_wb97mv", "opoly26": "opoly26_wb97mv",
+    "spice": "spice_wb97md3", "omc": "omc25_pbe", "omc25": "omc25_pbe",
+}
 LOT_DOMAIN_TEXT = {"molecule": "molecules", "crystal": "crystals", "slab": "surfaces"}
 
 
 def canonical_lot(name: str, lots: list[str]) -> str | None:
-    """The model's spelling of a level of theory, matched without regard to case (MP_PBE -> mp_pbe)."""
-    return next((x for x in lots if x.lower() == str(name).strip().lower()), None)
+    """The model's spelling of a level of theory, resolving case and common PAW/functional aliases."""
+    low = str(name).strip().lower()
+    hit = next((x for x in lots if x.lower() == low), None)
+    if hit is not None:
+        return hit
+    aliased = LOT_ALIASES.get(low)
+    if aliased is not None:
+        return next((x for x in lots if x.lower() == aliased.lower()), None)
+    return None
 
 
 def check_lot_domain(lot: str, domain: str) -> None:
@@ -104,18 +125,84 @@ def _lot(requested: str, domain: str, model: dict | None = None, analysis: dict 
     if domain == "molecule":
         return "auto", "Molecule: ωB97M-V, the level of the OMol25 data."
     lots = (model or {}).get("lots") or []
-    if domain == "slab" and "oc20_rpbe" in lots:
-        if "oc22_pbeU" in lots and (analysis or {}).get("hubbard_u") is True:
-            return "oc22_pbeU", "Oxide surface: PBE+U (OC22 oxide catalysis)."
+    if domain == "slab" and ("oc20_rpbe" in lots or "oc25_rpbe" in lots):
+        if (analysis or {}).get("hubbard_u") is True:
+            if "oc22_pbeU" in lots:
+                return "oc22_pbeU", "Oxide surface: PBE+U (OC22 oxide catalysis)."
+            if "omat_pbeU" in lots:
+                return "omat_pbeU", "Oxide surface: PBE+U (OMat24 PBE_54)."
+            if "mp_pbeU" in lots:
+                return "mp_pbeU", "Oxide surface: PBE+U (Materials Project PBE_52)."
+        if "oc25_rpbe" in lots and "oc20_rpbe" not in lots:
+            return "oc25_rpbe", "Surface slab: RPBE (OC25 catalysis), avoiding PBE CO/adsorbate overbinding."
         return "oc20_rpbe", "Surface slab: RPBE (OC20 heterogeneous catalysis), avoiding PBE CO/adsorbate overbinding."
     return "auto", "Periodic: PBE, with +U chosen from the elements as in Materials Project."
 
 
-def route(spec: dict, analysis: dict, devices: list[str], free_gb: float | None, cal: dict, model: dict) -> dict:
+def _is_cuda_device(dev: str) -> bool:
+    return dev == "cuda" or (dev.startswith("cuda:") and dev[5:].isdigit())
+
+
+def _device_family(dev: str) -> str:
+    return "cuda" if _is_cuda_device(dev) else dev
+
+
+def _resolve_requested_device(req: str, avail: list[str], dev_free: dict[str, float | None]) -> str | None:
+    if req in avail:
+        return req
+    if req == "cuda":
+        cuda_avail = [d for d in avail if _is_cuda_device(d)]
+        if cuda_avail:
+            return max(cuda_avail, key=lambda d: dev_free.get(d) if dev_free.get(d) is not None else -1.0)
+    if req == "cuda:0" and "cuda" in avail:
+        return "cuda:0"
+    return None
+
+
+def _build_device_free_map(devices: list, free_gb: float | dict | None, device_free_gb: dict[str, float | None] | None) -> tuple[dict[str, float | None], bool]:
+    """Return (device -> free_gb map, has_explicit_per_device_map)."""
+    out: dict[str, float | None] = {}
+    has_map = False
+    for d in devices:
+        if isinstance(d, dict):
+            did = d.get("id") or d.get("device")
+            if did:
+                val = d.get("vram_free_gb") if "vram_free_gb" in d else d.get("free_gb")
+                if val is not None or "vram_free_gb" in d or "free_gb" in d:
+                    out[did] = val
+                    has_map = True
+    if isinstance(free_gb, dict):
+        out.update(free_gb)
+        has_map = True
+    if isinstance(device_free_gb, dict):
+        out.update(device_free_gb)
+        has_map = True
+    return out, has_map
+
+
+def _free_for(dev: str, scalar_free: float | None, dev_free: dict[str, float | None], has_map: bool) -> float | None:
+    if dev in dev_free:
+        return dev_free[dev]
+    if dev == "cuda" and "cuda:0" in dev_free:
+        return dev_free["cuda:0"]
+    if dev == "cuda:0" and "cuda" in dev_free:
+        return dev_free["cuda"]
+    if has_map and _is_cuda_device(dev):
+        return None
+    return scalar_free
+
+
+def route(spec: dict, analysis: dict, devices: list, free_gb: float | dict | None, cal: dict, model: dict,
+          *, device_free_gb: dict[str, float | None] | None = None) -> dict:
     rt, task = spec["runtime"], spec["task"]
     avail = [d["id"] if isinstance(d, dict) else d for d in devices]
-    if rt["device"] != "auto" and rt["device"] not in avail:
-        raise RoutingError(f"Device {rt['device']!r} is not available on this computer ({', '.join(avail) or 'none'}).")
+    dev_free_map, has_dev_free_map = _build_device_free_map(devices, free_gb, device_free_gb)
+    scalar_free = None if isinstance(free_gb, dict) else free_gb
+    req_device: str | None = None
+    if rt["device"] != "auto":
+        req_device = _resolve_requested_device(rt["device"], avail, dev_free_map)
+        if req_device is None:
+            raise RoutingError(f"Device {rt['device']!r} is not available on this computer ({', '.join(avail) or 'none'}).")
     lots = model.get("lots", [])
     for asked, where in ((rt["lot"], ""), ((analysis.get("file_lot") if rt["lot"] == "auto" else None), " (named in the structure file)")):
         if asked and asked != "auto":
@@ -136,22 +223,41 @@ def route(spec: dict, analysis: dict, devices: list[str], free_gb: float | None,
     calls = estimated_calls(spec, analysis)
     reasons: dict[str, str] = {}
     lot, reasons["lot"] = _lot(rt["lot"], domain, model, analysis)
+    prec_req = str(rt.get("precision") or "auto").strip().lower()
+    if prec_req == "bf16_nodes":
+        raise RoutingError("precision='bf16_nodes' is disabled in mena_app (breaks force conservation, Hessian symmetry, and NVE integration); use 'auto', 'fp32_ieee', or 'exact'.")
+    if prec_req not in ("auto", "fp32_ieee", "exact"):
+        raise RoutingError(f"Unsupported precision mode {prec_req!r}; expected auto, fp32_ieee, or exact.")
+    if rt["dtype"] == "float64" and prec_req == "fp32_ieee":
+        raise RoutingError("precision='fp32_ieee' requires single precision (float32) and conflicts with dtype='float64'.")
+    if rt["dtype"] == "float32" and prec_req == "exact":
+        raise RoutingError("precision='exact' requires double precision (float64) and conflicts with dtype='float32'.")
+    explicit_exact = rt["dtype"] == "float64" or prec_req == "exact"
+    if explicit_exact and not can_f64:
+        raise RoutingError(f"{model.get('title')} runs in single precision only.")
 
-    want_f64 = can_f64 and (rt["dtype"] == "float64" or (rt["dtype"] == "auto" and task in F64_TASKS))
+    want_f64 = can_f64 and (explicit_exact or (rt["dtype"] == "auto" and prec_req == "auto" and task in F64_TASKS))
     options = []
-    for dev in ([rt["device"]] if rt["device"] != "auto" else avail):
-        c = costmodel.curve(cal, domain, dev, edges, backend)
-        options.append({"device": dev, "seconds": None if c is None else costmodel.job_seconds(c, calls), "curve": c})
+    for dev in ([req_device] if req_device is not None else avail):
+        c = costmodel.curve(cal, domain, _device_family(dev), edges, backend)
+        options.append({
+            "device": dev,
+            "seconds": None if c is None else costmodel.job_seconds(c, calls),
+            "curve": c,
+            "free_gb": _free_for(dev, scalar_free, dev_free_map, has_dev_free_map),
+        })
     known = [o for o in options if o["seconds"] is not None]
-    uncal_cuda = next((o for o in options if o["device"] == "cuda" and o["seconds"] is None), None)
-    if rt["device"] != "auto":
+    cuda_opts = [o for o in options if _is_cuda_device(o["device"])]
+    uncal_cuda = next((o for o in cuda_opts if o["seconds"] is None), None)
+    if req_device is not None:
         pick = options[0]
         reasons["device"] = "You chose this device."
-    elif not known or (uncal_cuda is not None and rt["dtype"] != "float64"):
-        pool = ([o for o in options if o["device"] != "mps"] or options) if rt["dtype"] == "float64" else options
+    elif not known or (uncal_cuda is not None and not explicit_exact):
+        pool = ([o for o in options if o["device"] != "mps"] or options) if explicit_exact else options
+        cuda_pool = [o for o in pool if _is_cuda_device(o["device"])]
         by_dev = {o["device"]: o for o in pool}
-        if "cuda" in by_dev:
-            pick = by_dev["cuda"]
+        if cuda_pool:
+            pick = max(cuda_pool, key=lambda o: o["free_gb"] if o["free_gb"] is not None else -1.0)
             reasons["device"] = "Selected CUDA GPU (run 'mena calibrate' to enable speed and memory estimates for this machine)."
         elif "mps" in by_dev and not want_f64 and (calls >= 5 or n >= 32):
             pick = by_dev["mps"]
@@ -160,40 +266,77 @@ def route(spec: dict, analysis: dict, devices: list[str], free_gb: float | None,
             pick = by_dev.get("cpu", pool[0])
             if len(avail) == 1:
                 reasons["device"] = "The only device available (run 'mena calibrate' to enable speed and memory estimates for this machine)."
+            elif explicit_exact and "mps" in avail and pick["device"] != "mps":
+                reasons["device"] = f"Selected {pick['device'].upper()} because Apple GPU does not support double precision (run 'mena calibrate' to enable speed and memory estimates for this machine)."
             else:
                 reasons["device"] = f"Selected {pick['device'].upper()} for this short or double-precision job (run 'mena calibrate' to enable speed and memory estimates for this machine)."
     else:
         pool = known
-        if rt["dtype"] == "float64":
-            pool = [o for o in known if o["device"] != "mps"] or known
+        mps_excluded = False
+        if explicit_exact:
+            non_mps_known = [o for o in known if o["device"] != "mps"]
+            mps_excluded = len(non_mps_known) < len(known)
+            if non_mps_known:
+                pool = non_mps_known
+            else:
+                non_mps_opts = [o for o in options if o["device"] != "mps"]
+                pool = non_mps_opts or known
         elif want_f64:
             cap = [o for o in known if o["device"] != "mps"]
             best = min(o["seconds"] for o in known)
             if cap and min(o["seconds"] for o in cap) <= MAX_F64_SLOWDOWN * best:
                 pool = cap
-        pick = min(pool, key=lambda o: o["seconds"])
+        pick = min(
+            pool,
+            key=lambda o: (
+                o["seconds"] if o["seconds"] is not None else float("inf"),
+                -(o["free_gb"] if o["free_gb"] is not None else -1.0),
+            ),
+        )
         others = [o for o in known if o is not pick]
-        if others:
+        if pick["seconds"] is None:
+            reasons["device"] = f"Selected {pick['device'].upper()} because Apple GPU does not support double precision (run 'mena calibrate' to enable speed and memory estimates for this machine)."
+        elif others:
             other = min(others, key=lambda o: o["seconds"])
-            reasons["device"] = f"Expected {_dur(pick['seconds'])} here against {_dur(other['seconds'])} on {other['device'].upper()} for {calls:,} model call{'s' if calls != 1 else ''}."
+            note = " (Apple GPU excluded: double precision requires CPU or CUDA)." if (mps_excluded and pick["device"] != "mps") else "."
+            reasons["device"] = f"Expected {_dur(pick['seconds'])} here against {_dur(other['seconds'])} on {other['device'].upper()} for {calls:,} model call{'s' if calls != 1 else ''}{note}"
         elif len(avail) == 1:
             reasons["device"] = "The only device available."
         else:
             reasons["device"] = f"Measured {_dur(pick['seconds'])} on {pick['device'].upper()} (run 'mena calibrate' to compare all devices)."
     device = pick["device"]
+    dev_free_gb = pick["free_gb"]
+    dev_family = _device_family(device)
 
-    if rt["dtype"] == "float64" and not can_f64:
-        raise RoutingError(f"{model.get('title')} runs in single precision only.")
-    if rt["dtype"] != "auto":
-        dtype, reasons["dtype"] = rt["dtype"], "You chose this precision."
+    if explicit_exact:
+        dtype, precision = "float64", "exact"
+        reasons["dtype"] = "You chose double precision." if rt["dtype"] == "float64" else "Double precision (float64) required by precision='exact'."
+        reasons["precision"] = _precision_reason("exact", explicit=(prec_req == "exact"))
+    elif rt["dtype"] != "auto":
+        dtype = rt["dtype"]
+        precision = prec_req
+        reasons["dtype"] = "You chose this precision."
+        reasons["precision"] = _precision_reason(precision, explicit=(prec_req != "auto"), backend=backend)
     elif not can_f64:
-        dtype, reasons["dtype"] = "float32", "This model runs in single precision only."
-    elif task in F64_TASKS and device != "mps":
-        dtype, reasons["dtype"] = "float64", "Force constants come from small force differences. Double precision adds about 15% to the time here."
-    elif task in F64_TASKS:
-        dtype, reasons["dtype"] = "float32", "This supercell would be much slower in double precision on the CPU. Single precision agreed to 1 part in 100,000 in our checks."
+        dtype, precision = "float32", prec_req
+        reasons["dtype"] = "This model runs in single precision only."
+        reasons["precision"] = _precision_reason(precision, explicit=(prec_req != "auto"), backend=backend)
+    elif task in F64_TASKS and prec_req == "auto" and _is_cuda_device(device) and backend == "lam4":
+        dtype, precision = "float32", "fp32_ieee"
+        reasons["dtype"] = "Exact IEEE float32 (TF32 disabled) keeps fused CUDA Dual-CSR kernels active while preserving finite-difference accuracy."
+        reasons["precision"] = reasons["dtype"]
+    elif task in F64_TASKS and prec_req == "auto" and device != "mps":
+        dtype, precision = "float64", "exact"
+        reasons["dtype"] = "Force constants come from small force differences. Double precision adds about 15% to the time here."
+        reasons["precision"] = "Double precision (FP64 exact) is used automatically for finite-difference force constants off MPS."
+    elif task in F64_TASKS and prec_req == "auto":
+        dtype, precision = "float32", "auto"
+        reasons["dtype"] = "This supercell would be much slower in double precision on the CPU. Single precision agreed to 1 part in 100,000 in our checks."
+        reasons["precision"] = "Single precision on Apple GPU avoids a slow CPU fallback."
     else:
-        dtype, reasons["dtype"] = "float32", "Single precision is accurate enough here and uses half the memory."
+        dtype, precision = "float32", prec_req
+        reasons["dtype"] = "Single precision is accurate enough here and uses half the memory."
+        reasons["precision"] = _precision_reason(precision, explicit=(prec_req != "auto"), backend=backend)
     if dtype == "float64" and device == "mps":
         raise RoutingError("A Mac GPU cannot run double precision. Choose float32 or the CPU.")
 
@@ -204,10 +347,10 @@ def route(spec: dict, analysis: dict, devices: list[str], free_gb: float | None,
     need = None if c is None else costmodel.peak_gb(c, dtype, low)
     if rt["low_memory"] == "auto":
         reasons["low_memory"] = "Not needed: the job fits comfortably."
-        if can_low and need is not None and free_gb and need > 0.5 * (free_gb - RESERVE_GB):
+        if can_low and need is not None and dev_free_gb and need > 0.5 * (dev_free_gb - RESERVE_GB):
             low, need = True, costmodel.peak_gb(c, dtype, True)
             reasons["low_memory"] = "Turned on so the job fits in free memory. It costs about 15-30% more time and gives the same forces."
-        elif can_low and need is None and free_gb is not None and free_gb < RESERVE_GB + 1.0:
+        elif can_low and need is None and dev_free_gb is not None and dev_free_gb < RESERVE_GB + 1.0:
             low = True
             reasons["low_memory"] = ("Turned on because free memory is low and there are no memory measurements for this "
                                      "computer yet (run 'mena calibrate').")
@@ -216,22 +359,40 @@ def route(spec: dict, analysis: dict, devices: list[str], free_gb: float | None,
             reasons["low_memory"] = "Turned on automatically for large CPU systems (≥ 1,500 atoms) to keep memory around 0.16 MB/atom."
     else:
         reasons["low_memory"] = "You chose this."
-    refuse_reserve = min(RESERVE_GB, 0.35 * free_gb) if free_gb else RESERVE_GB
-    level = "unknown" if need is None or not free_gb else ("refuse" if need > free_gb - refuse_reserve else ("warn" if need > 0.5 * free_gb else "ok"))
+    refuse_reserve = min(RESERVE_GB, 0.35 * dev_free_gb) if dev_free_gb else RESERVE_GB
+    level = "unknown" if need is None or not dev_free_gb else ("refuse" if need > dev_free_gb - refuse_reserve else ("warn" if need > 0.5 * dev_free_gb else "ok"))
     dense_molecule = domain == "molecule" and n < (64 if backend == "lam4" else 512)
     # NEB images jump between calls: a skin only adds pairs. Relaxation steps are small (FIRE, <= 0.2 A): a 0.5 A skin
     # reuses the list for most steps; results are identical (pairs beyond the cutoff weigh exactly zero)
-    skin = 1.0 if task == "md" and not dense_molecule else (0.5 if task == "relax" and not dense_molecule else 0.0)
-    compile_on, reasons["compile"] = _compile(rt.get("compile", "auto"), backend, device, dense_molecule, low, pick["seconds"], calls)
+    auto_skin = 1.0 if task == "md" and not dense_molecule else (0.5 if task == "relax" and not dense_molecule else 0.0)
+    skin = float(rt["skin"]) if rt.get("skin") is not None else auto_skin
+    compile_on, reasons["compile"] = _compile(rt.get("compile", "auto"), backend, dev_family, dense_molecule, low, pick["seconds"], calls)
     seconds = pick["seconds"]
     if compile_on and seconds is not None:
-        seconds = costmodel.compiled_seconds(seconds, device)
+        seconds = costmodel.compiled_seconds(seconds, dev_family, backend)
     if task == "md" and md_repeat(analysis) > 1:
         r = md_repeat(analysis)
         reasons["size"] = f"The cell is repeated {r}×{r}×{r} ({n} atoms): a thermostat needs many atoms to define a temperature."
-    return {"model": model["id"], "backend": backend, "device": device, "dtype": dtype, "low_memory": low, "skin": skin, "compile": compile_on, "lot": lot, "threads": rt["threads"], "calls": calls, "atoms": n, "edges": edges,
-            "seconds": seconds, "peak_gb": None if need is None else round(need, 2), "free_gb": free_gb, "memory_level": level,
-            "reasons": reasons, "cost_source": cal.get("source")}
+    resolved_lot = lot
+    if lot == "auto":
+        if domain == "molecule":
+            resolved_lot = "omol_wb97mv"
+        else:
+            resolved_lot = "mp_pbeU" if analysis.get("hubbard_u") is True else "mp_pbe"
+    dec_out = {
+        "model": model["id"], "backend": backend, "device": device, "dtype": dtype, "precision": precision,
+        "low_memory": low, "skin": skin, "compile": compile_on, "lot": lot, "resolved_lot": resolved_lot,
+        "threads": rt["threads"], "calls": calls,
+        "atoms": n, "edges": edges, "seconds": seconds, "peak_gb": None if need is None else round(need, 2),
+        "free_gb": dev_free_gb, "memory_level": level, "reasons": reasons, "cost_source": cal.get("source"),
+    }
+    if rt.get("edge_mode") and rt["edge_mode"] != "auto":
+        dec_out["edge_mode"] = str(rt["edge_mode"])
+    if rt.get("add_dispersion") in ("on", "off"):
+        dec_out["add_dispersion"] = rt["add_dispersion"] == "on"
+    if rt.get("u_flag") in ("0", "1", 0, 1):
+        dec_out["u_flag"] = int(rt["u_flag"])
+    return dec_out
 
 
 GPU_COMPILE_MIN_CALLS = 200  # without time measurements: compile GPU jobs at least this long
@@ -247,7 +408,7 @@ def _compile(requested: str, backend: str, device: str, dense_molecule: bool, lo
         return False, "Low-memory mode runs uncompiled."
     if requested == "on":
         return True, "You turned this on."
-    if dense_molecule:
+    if dense_molecule and backend == "lam":
         return False, "Small molecules use a path that compilation does not speed up."
     c = costmodel.COMPILE.get(device)
     if c is None:
@@ -256,7 +417,7 @@ def _compile(requested: str, backend: str, device: str, dense_molecule: bool, lo
         on = device != "cpu" and calls >= GPU_COMPILE_MIN_CALLS
         return on, (f"A long job ({calls:,} calls): worth a one-time warm-up of about {c['warmup_s']:.0f} s." if on
                     else "A short job: the one-time warm-up would not pay back.")
-    saved = eager_s - costmodel.compiled_seconds(eager_s, device)
+    saved = eager_s - costmodel.compiled_seconds(eager_s, device, backend)
     if saved > 0:
         return True, f"Saves about {_dur(saved)} after a one-time warm-up of about {c['warmup_s']:.0f} s."
     return False, f"A short job: the one-time warm-up (about {c['warmup_s']:.0f} s) is longer than the time it would save."
@@ -268,6 +429,16 @@ class PlanError(ValueError):
 
 class RoutingError(PlanError):
     pass
+
+
+def _precision_reason(precision: str, explicit: bool = False, backend: str = "lam4") -> str:
+    if precision == "exact":
+        return "You chose double precision (FP64 exact)." if explicit else "Double precision (FP64 exact)."
+    if precision == "fp32_ieee":
+        if backend != "lam4":
+            return "Strict IEEE FP32 requested (standard float32 used on legacy backend)."
+        return "You chose strict IEEE FP32 (TF32 disabled)." if explicit else "Strict IEEE FP32 (TF32 disabled)."
+    return "Automatic execution precision for this device and task."
 
 
 def _dur(s: float) -> str:

@@ -12,9 +12,9 @@ import { deviceLabel, devicesLabel, formulaText } from './labels.js';
 const SYSTEMS = [
   ['water', 'Water droplet — Molecules (Mena-LAM-s)', 'Molecules — Mena-LAM-s'],
   ['ethanol', 'Ethanol cluster — Molecules (Mena-LAM-s)', 'Molecules — Mena-LAM-s'],
-  ['cssni3', 'CsSnI₃ perovskite — Crystal (Mena-LAM-preview)', 'Periodic Crystals — Mena-LAM-preview'],
-  ['diamond', 'Dense diamond (158 nbr/at) — Crystal (Mena-LAM-preview)', 'Periodic Crystals — Mena-LAM-preview'],
-  ['si', 'Silicon lattice — Crystal (Mena-LAM-preview)', 'Periodic Crystals — Mena-LAM-preview'],
+  ['cssni3', 'CsSnI₃ perovskite — Crystal (Mena-LAM-6)', 'Periodic Crystals — Mena-LAM-6'],
+  ['diamond', 'Dense diamond (158 nbr/at) — Crystal (Mena-LAM-6)', 'Periodic Crystals — Mena-LAM-6'],
+  ['si', 'Silicon lattice — Crystal (Mena-LAM-6)', 'Periodic Crystals — Mena-LAM-6'],
 ];
 const MOL_SYSTEMS = new Set(['water', 'ethanol']);
 const SIZES_MD = [500, 1000, 2000, 5000];
@@ -55,7 +55,7 @@ export function mountBench(host) {
   const head = el('div', { class: 'bench-head' },
     el('div', {},
       el('h2', { class: 'section-h' }, 'Run it on this computer — live 3D simulation & speed benchmark'),
-      el('p', { class: 'muted bench-intro' }, 'Benchmark molecules on Mena-LAM-s or crystals on Mena-LAM-preview right on your hardware — either as real-time 3D NVE dynamics or a multi-process scaling ladder.')),
+      el('p', { class: 'muted bench-intro' }, 'Benchmark molecules on Mena-LAM-s or crystals on Mena-LAM-6 right on your hardware — either as real-time 3D NVE dynamics or a multi-process scaling ladder.')),
     el('span', { class: 'pill accent-pill' }, state.info.machine.chip || devicesLabel(state.info.machine.devices)));
   host.append(head);
 
@@ -64,7 +64,7 @@ export function mountBench(host) {
 
   const systemSubLabel = sysId => MOL_SYSTEMS.has(sysId)
     ? 'active molecular cluster (Mena-LAM-s)'
-    : 'active crystal supercell (Mena-LAM-preview)';
+    : 'active crystal supercell (Mena-LAM-6)';
 
   // Mode segmented control
   const modeSeg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Simulation mode' });

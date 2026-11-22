@@ -70,6 +70,32 @@ class ModelConfig:
     repulsion: str = "nlh_c2_shift_rmin"
     pair_read: bool = False      # omol4c pair read: F -5% but E +2-3% and an edge MLP; graftable later (zero-init)
     direct_force_head: bool = True  # training-only non-conservative head for the direct-force phase; never used at inference
+    # lam6 unified environment-modulated trunk & factorized LoT (defaults preserve lam4/lam5 bit-exactness)
+    ffn_mode: str = "domain_experts"   # "domain_experts" | "env_mod_768" | "env_mod_1152"
+    env_mod_rank: int = 32
+    contract_cumulative_t: bool = False  # lam6: contract bound_vectors(t_new, c) in Stage u2/v2/t3 & AngularBranch
+    coord_inv_scale: bool = False        # lam6: exp(-(log_scale_0 + alpha * log1p(dsum_i))) continuous scaling
+    coord_alpha_max: float = 2.5         # max exponent bound alpha in (0, coord_alpha_max) or (-coord_alpha_max, coord_alpha_max)
+    coord_alpha_signed: bool = False     # lam6 Resume A: signed alpha = coord_alpha_max * tanh(alpha_raw)
+    factorized_lot: bool = False         # lam6: (xc_id, paw_id, u_i) per-stage FiLM + Readout FiLM
+    n_xc_tokens: int = 12
+    n_paw_bases: int = 16
+    direct_inv_bypass: bool = False      # lam6: zero-init Stage-2 invariant bypass directly into Readout h
+    direct_inv_rank: int = 64
+    expose_readout_phi: bool = False     # lam6: expose pre-head phi_i [N, d//2] for Tier B #4 Laplace OOD
+    two_channel_spin: bool = False       # lam6: two-channel (u_rad_i >= 0, m_raw_i) spin descriptor head
+    use_l2_efg: bool = False             # lam6: l=2 EFG FieldFeedback + EFG coupling
+    sqe_pqeq: bool = False               # lam6: implicit PCG-PQEq + scaled SQE electrostatics/polarization
+    sqe_k_fix: int = 24                  # lam6: fixed implicit PCG steps (24 recommended when BatchedSPME+EFG active)
+    spme_batched: bool = False           # lam6: gated BatchedSPME on periodic cells
+    cloud_overlap: bool = False          # lam6: Pauli (>=0) + l=1,2 anisotropic overlap + EFG head
+    eda_calib_head: bool = False         # lam6: Tier B #4 zero-leak EDA_CalibHead + X-Ray support
+    iso_atom_n1: bool = False            # lam6: (Z, lot, spin) N=1 delta switched on by 1 - smoothstep(dsum, d_lo, d_hi)
+    iso_atom_d_lo: float = 0.05
+    iso_atom_d_hi: float = 0.5
+    spin_exchange: bool = False          # lam6 graft: size-consistent Hund + Heisenberg SpinExchangeHead (molecule only)
+    quad_l2_head: bool = False           # lam6 graft: zero-init Stage-2 ten -> [xx,yy,zz,xy,xz,yz] atomic quadrupole
+    gap_head: bool = False               # lam6 graft: intensive attention + softmin [gap_a, gap_b] eV head (molecule only)
 
     def __post_init__(self) -> None:
         if not 0.0 < self.r_on < self.r_cut:
@@ -95,6 +121,16 @@ class ModelConfig:
             raise ValueError("feedback_points must be in [0, n_stages - 1]")
         if self.edge_gain_max <= 0.0:
             raise ValueError("edge_gain_max must be > 0")
+        if self.ffn_mode not in ("domain_experts", "env_mod_768", "env_mod_1152"):
+            raise ValueError("ffn_mode in {domain_experts, env_mod_768, env_mod_1152}")
+        if self.env_mod_rank < 1 or self.direct_inv_rank < 1 or self.coord_alpha_max <= 0.0:
+            raise ValueError("env_mod_rank, direct_inv_rank >= 1 and coord_alpha_max > 0")
+        if self.n_xc_tokens < self.n_tokens or self.n_paw_bases < 1:
+            raise ValueError("n_xc_tokens >= n_tokens and n_paw_bases >= 1")
+        if self.sqe_k_fix < 1:
+            raise ValueError("sqe_k_fix >= 1")
+        if not 0.0 <= self.iso_atom_d_lo < self.iso_atom_d_hi:
+            raise ValueError("need 0 <= iso_atom_d_lo < iso_atom_d_hi")
 
     def hash(self) -> str:
         d = {k: v for k, v in asdict(self).items() if k not in _LAM4_EXT_DEFAULTS or v != _LAM4_EXT_DEFAULTS[k]}
@@ -111,13 +147,63 @@ class ModelConfig:
         kw.update(overrides)
         return cls(**kw)
 
+    @classmethod
+    def lam6(cls, ffn_mode: str = "env_mod_1152", **overrides) -> ModelConfig:
+        """lam6 preset: full 6.0 A l<=3 cutoff, Design C continuous env_mod (or Design A fallback), cumulative t_new contraction,
+        continuous log1p(dsum) invariant scaling, factorized (xc, paw, u_i) conditioning/readout, DirectInvBypass & two-channel spin."""
+        if overrides.get("r_cut_near", 0.0) > 0.0:
+            raise ValueError("LAM-6 locks full 6.0 A cutoff for all channels (r_cut_near must be 0.0)")
+        kw = dict(r_cut=6.0, r_on=5.0, n_stages=3, r1_vec=128, r2_ten=64, r3_tvv=64, k3_read=32, ttt_mix=16, vttv_rank=32,
+                  inv_norm=True, r_cut_near=0.0, r_on_near=3.0, k_s_far=32, k_v_far=16, direct_force_head=False,
+                  aniso_polarizability=True, stage_e_weight=0.05, edge_gain_max=2.0, long_range_crystal="spme_gated",
+                  ffn_mode=ffn_mode, env_mod_rank=32, contract_cumulative_t=True, coord_inv_scale=True,
+                  coord_alpha_max=2.5, factorized_lot=True, n_xc_tokens=12, n_paw_bases=16,
+                  direct_inv_bypass=True, direct_inv_rank=64, expose_readout_phi=True, two_channel_spin=True,
+                  iso_atom_n1=True, iso_atom_d_lo=0.05, iso_atom_d_hi=0.5)
+        kw.update(overrides)
+        return cls(**kw)
+
+    @classmethod
+    def lam6_cloud(cls, ffn_mode: str = "env_mod_1152", **overrides) -> ModelConfig:
+        """LAM-6 cloud-overlap preset without SQE/PQEq/SPME/EDA (ExactCoulomb + CloudOverlap + Polarization)."""
+        kw = dict(cloud_overlap=True, sqe_pqeq=False, spme_batched=False, eda_calib_head=False)
+        kw.update(overrides)
+        return cls.lam6(ffn_mode=ffn_mode, **kw)
+
+    @classmethod
+    def lam6_physics(cls, ffn_mode: str = "env_mod_1152", **overrides) -> ModelConfig:
+        """Full LAM-6 Gate U2+P3 / D1+E1 preset: Design C trunk + l=2 EFG + PCG-SQE/PQEq + BatchedSPME + CloudOverlap + EDA."""
+        kw = dict(use_l2_efg=True, sqe_pqeq=True, sqe_k_fix=12, spme_batched=True, cloud_overlap=True, eda_calib_head=True)
+        kw.update(overrides)
+        return cls.lam6(ffn_mode=ffn_mode, **kw)
+
 
 _LAM4_EXT_DEFAULTS = {
     "r1_vec": 32, "r2_ten": 16, "r3_tvv": 16, "k3_read": 8, "inv_norm": False,
     "r_cut_near": 0.0, "r_on_near": 3.0, "k_s_far": 32, "k_v_far": 16,
     "aniso_polarizability": False, "stage_e_weight": 0.0, "edge_gain_max": 1.0,
+    "ffn_mode": "domain_experts", "env_mod_rank": 32, "contract_cumulative_t": False,
+    "coord_inv_scale": False, "coord_alpha_max": 2.5, "coord_alpha_signed": False, "factorized_lot": False,
+    "n_xc_tokens": 12, "n_paw_bases": 16, "direct_inv_bypass": False,
+    "direct_inv_rank": 64, "expose_readout_phi": False, "two_channel_spin": False,
+    "use_l2_efg": False, "sqe_pqeq": False, "sqe_k_fix": 24,
+    "spme_batched": False, "cloud_overlap": False, "eda_calib_head": False,
+    "iso_atom_n1": False, "iso_atom_d_lo": 0.05, "iso_atom_d_hi": 0.5,
+    "spin_exchange": False, "quad_l2_head": False, "gap_head": False,
 }
 
 
 def lam5_config(**overrides) -> ModelConfig:
     return ModelConfig.lam5(**overrides)
+
+
+def lam6_config(ffn_mode: str = "env_mod_1152", **overrides) -> ModelConfig:
+    return ModelConfig.lam6(ffn_mode=ffn_mode, **overrides)
+
+
+def lam6_cloud_config(ffn_mode: str = "env_mod_1152", **overrides) -> ModelConfig:
+    return ModelConfig.lam6_cloud(ffn_mode=ffn_mode, **overrides)
+
+
+def lam6_physics_config(ffn_mode: str = "env_mod_1152", **overrides) -> ModelConfig:
+    return ModelConfig.lam6_physics(ffn_mode=ffn_mode, **overrides)

@@ -24,21 +24,32 @@ def _set_mps_fraction() -> None:
 def _lam(model: dict, d: dict):
     from lam.models.mena_lam import MenaLAMCalculator
 
-    if d["device"] == "mps":
+    dev = str(d["device"])
+    if dev.startswith("mps"):
         _set_mps_fraction()
-    kw = {"device": d["device"], "dtype": d["dtype"], "lot": d["lot"], "skin": d["skin"], "low_memory": d["low_memory"],
+    kw = {"device": dev, "dtype": d["dtype"], "lot": d["lot"], "skin": d["skin"], "low_memory": d["low_memory"],
           "compile": bool(d.get("compile", False))}
     sig = inspect.signature(MenaLAMCalculator.__init__).parameters  # older trees take fewer options
+    if d.get("precision") is not None and "precision" in sig:
+        kw["precision"] = d["precision"]
     return MenaLAMCalculator.from_checkpoint(model["path"], **{k: v for k, v in kw.items() if k in sig or k == "device"})
 
 
 def _lam4(model: dict, d: dict):
     from lam4.calc import MenaCalculator
 
-    if d["device"] == "mps":
+    dev = str(d["device"])
+    if dev.startswith("mps"):
         _set_mps_fraction()
-    kw = {"device": d["device"], "dtype": d["dtype"], "lot": d["lot"], "skin": d["skin"], "low_memory": d["low_memory"],
-          "compile": bool(d.get("compile", False))}
+    comp_raw = d.get("compile", False)
+    comp = comp_raw if isinstance(comp_raw, str) else bool(comp_raw)
+    kw = {"device": dev, "dtype": d["dtype"], "lot": d["lot"], "skin": d["skin"], "low_memory": d["low_memory"],
+          "compile": comp}
+    sig = inspect.signature(MenaCalculator.__init__).parameters
+    for opt_k in ("precision", "edge_mode", "add_dispersion", "u_flag", "weights", "compute_stress"):
+        val = d.get(opt_k)
+        if val is not None and opt_k in sig:
+            kw[opt_k] = val
     return MenaCalculator.from_checkpoint(model["path"], **kw)
 
 
@@ -68,7 +79,7 @@ def clone_calculator(calc):
             setattr(c, attr, {})
         elif hasattr(c, attr):
             setattr(c, attr, None)
-    for attr in ("_last_state", "_last_cell_t", "_last_edge_shift_cart", "_last_info_state", "_last_info_sig", "_active_csr_plan"):
+    for attr in ("_last_state", "_last_cell_t", "_last_edge_shift_cart", "_last_info_state", "_last_info_sig", "_active_csr_plan", "_lot_cache"):
         if hasattr(c, attr):
             setattr(c, attr, None)
     if "calculate" in getattr(c, "__dict__", {}):

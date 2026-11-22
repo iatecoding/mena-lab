@@ -26,7 +26,14 @@ _DUMMY_I64: dict[tuple[str, int | None], Tensor] = {}
 
 
 def has_metal_csr() -> bool:
-    return bool(not _METAL_FAILED and torch.backends.mps.is_available() and hasattr(torch.mps, "compile_shader"))
+    if _METAL_FAILED or not (torch.backends.mps.is_available() and hasattr(torch.mps, "compile_shader")):
+        return False
+    if _METAL_LIB is None and not torch.compiler.is_compiling():
+        try:
+            get_metal_csr_lib()
+        except Exception:  # noqa: BLE001
+            return False
+    return True
 
 
 def get_metal_csr_lib() -> Any:

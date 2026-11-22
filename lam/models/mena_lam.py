@@ -1992,6 +1992,8 @@ def load_mena_lam_checkpoint(
 
 def compile_for_inference(model: MenaLAM, fast: str = "gather,proj,mix", mode: str | None = None) -> None:
     """Inference only (frozen weights, create_graph=False): fast ops + torch.compile(dynamic=True) of each stage."""
+    import warnings
+
     par = next(model.parameters())
     for p in model.parameters():
         p.requires_grad_(False)
@@ -1999,11 +2001,35 @@ def compile_for_inference(model: MenaLAM, fast: str = "gather,proj,mix", mode: s
         model.core.set_fast_ops(fast)
     for name in _CONST_FN:
         _const(name, torch.zeros(1, device=par.device, dtype=par.dtype))
-    for st in model.core.stages_list:
-        eager = st.__dict__.get("_eager_forward_sparse", st.forward_sparse)
-        st._eager_forward_sparse = eager
-        st._compiled_forward_sparse = torch.compile(eager, dynamic=True, mode=mode)
-        st.forward_sparse = st._compiled_forward_sparse
+    try:
+        for st in model.core.stages_list:
+            eager = st.__dict__.get("_eager_forward_sparse", st.forward_sparse)
+            st._eager_forward_sparse = eager
+            comp = torch.compile(eager, dynamic=True, mode=mode)
+            st._compiled_forward_sparse = comp
+
+            def _make_safe(compiled_fn, eager_fn):
+                ok = False
+
+                def _wrapped(*args, **kwargs):
+                    nonlocal ok
+                    if ok or torch.compiler.is_compiling():
+                        return compiled_fn(*args, **kwargs)
+                    try:
+                        out = compiled_fn(*args, **kwargs)
+                        ok = True
+                        return out
+                    except Exception as exc:  # noqa: BLE001
+                        warnings.warn(f"compile_for_inference forward failed ({exc}); falling back to eager.", RuntimeWarning)
+                        use_compiled_stages(model, False)
+                        return eager_fn(*args, **kwargs)
+
+                return _wrapped
+
+            st.forward_sparse = _make_safe(comp, eager)
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"compile_for_inference setup failed ({exc}); falling back to eager.", RuntimeWarning)
+        use_compiled_stages(model, False)
 
 
 def use_compiled_stages(model: MenaLAM, on: bool) -> None:
@@ -2104,10 +2130,13 @@ class MenaLAMCalculator(Calculator):
                 _const(name, torch.zeros(1, device=par.device, dtype=par.dtype))
         if fast_ops == "auto":
             if not self.model.core.fast_ops:
+                # "edge" (per-edge products without reductions over the 3/5-component axis in backward): measured on an M3 Max,
+                # Si 4096 forces 438 -> 269 ms on MPS, neutral to slightly faster on the CPU; same forces to 1.5e-6 eV/A.
+                edge = ",edge" if self.device.type in ("mps", "cpu") else ""
                 if self.device.type == "cuda" or do_compile or (self.device.type == "cpu" and do_freeze):
-                    self.model.core.set_fast_ops("gather,proj,radial,mix")
+                    self.model.core.set_fast_ops("gather,proj,radial,mix" + edge)
                 elif self.device.type == "mps":
-                    self.model.core.set_fast_ops("gather,proj,radial,mix" if do_freeze else "gather")
+                    self.model.core.set_fast_ops(("gather,proj,radial,mix" if do_freeze else "gather") + edge)
         elif fast_ops is not None:
             self.model.core.set_fast_ops(fast_ops)
 

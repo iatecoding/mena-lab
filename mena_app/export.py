@@ -82,42 +82,59 @@ def _py_load_expr(s: dict, override_path: str | None = None) -> tuple[bool, bool
     return True, False, f"read({_structure_ref(s)!r})"
 
 
-def _md_body(p: dict) -> str:
+def _md_body(p: dict, is_mol: bool = False) -> str:
     ens = p.get("ensemble", "nvt")
+    seed = int(p.get("seed", 0))
+    iv = max(1, int(p.get("save_every", 10)))
+    init_vel = (
+        "import numpy as np\n"
+        "from ase import units\n"
+        "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation\n"
+        f"MaxwellBoltzmannDistribution(atoms, temperature_K={p['temperature']}, rng=np.random.default_rng({seed}))\n"
+        "if len(atoms) > 1:\n"
+        "    Stationary(atoms)\n"
+        + ("if len(atoms) > 2:\n    ZeroRotation(atoms)\n" if is_mol else "")
+    )
     if ens == "nve":
         return (
-            "from ase import units\n"
-            "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution\n"
-            "from ase.md.verlet import VelocityVerlet\n"
-            f"MaxwellBoltzmannDistribution(atoms, temperature_K={p['temperature']})\n"
-            f"md = VelocityVerlet(atoms, timestep={p['timestep']} * units.fs, trajectory='md.traj')\n"
-            f"md.run({p['steps']})\n"
+            init_vel
+            + "from ase.md.verlet import VelocityVerlet\n"
+            + f"md = VelocityVerlet(atoms, timestep={p['timestep']} * units.fs, trajectory='md.traj', loginterval={iv})\n"
+            + f"md.run({p['steps']})\n"
         )
     if ens == "npt":
         return (
-            "from ase import units\n"
-            "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution\n"
-            f"MaxwellBoltzmannDistribution(atoms, temperature_K={p['temperature']})\n"
-            "try:\n"
-            "    from ase.md.nose_hoover_chain import IsotropicMTKNPT\n"
-            f"    md = IsotropicMTKNPT(atoms, timestep={p['timestep']} * units.fs, temperature_K={p['temperature']}, "
-            f"pressure_au={p['pressure']} * units.bar, tdamp=100 * units.fs, pdamp=1000 * units.fs, trajectory='md.traj')\n"
-            "except ImportError:\n"
-            "    from ase.md.nptberendsen import NPTBerendsen\n"
-            f"    md = NPTBerendsen(atoms, timestep={p['timestep']} * units.fs, temperature_K={p['temperature']}, "
-            f"pressure_au={p['pressure']} * units.bar, taut=100 * units.fs, taup=1000 * units.fs, "
-            "compressibility_au=4.57e-5 / units.bar, trajectory='md.traj')\n"
-            f"md.run({p['steps']})\n"
+            init_vel
+            + "try:\n"
+            + "    from ase.md.langevinbaoab import LangevinBAOAB\n"
+            + f"    md = LangevinBAOAB(atoms, timestep={p['timestep']} * units.fs, temperature_K={p['temperature']}, "
+            + f"externalstress=-{p['pressure']} * units.bar, hydrostatic=True, "
+            + f"T_tau=(1.0 / max({p['friction']}, 1e-4)) * units.fs, P_tau=1000.0 * units.fs, trajectory='md.traj', loginterval={iv})\n"
+            + "except ImportError:\n"
+            + "    from ase.md.nptberendsen import NPTBerendsen\n"
+            + f"    md = NPTBerendsen(atoms, timestep={p['timestep']} * units.fs, temperature_K={p['temperature']}, "
+            + f"pressure_au={p['pressure']} * units.bar, taut=100 * units.fs, taup=1000 * units.fs, "
+            + f"compressibility_au=4.57e-5 / units.bar, trajectory='md.traj', loginterval={iv})\n"
+            + f"md.run({p['steps']})\n"
         )
     return (
-        "from ase import units\n"
-        "from ase.md.langevin import Langevin\n"
-        "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution\n"
-        f"MaxwellBoltzmannDistribution(atoms, temperature_K={p['temperature']})\n"
-        f"md = Langevin(atoms, timestep={p['timestep']} * units.fs, temperature_K={p['temperature']}, "
-        f"friction={p['friction']} / units.fs, trajectory='md.traj')\n"
-        f"md.run({p['steps']})\n"
+        init_vel
+        + "from ase.md.langevin import Langevin\n"
+        + f"md = Langevin(atoms, timestep={p['timestep']} * units.fs, temperature_K={p['temperature']}, "
+        + f"friction={p['friction']} / units.fs, trajectory='md.traj', loginterval={iv})\n"
+        + f"md.run({p['steps']})\n"
     )
+
+
+def _compile_kwarg(comp: Any) -> str:
+    if isinstance(comp, str):
+        low = comp.strip().lower()
+        if not low or low in ("false", "0", "no", "off", "none"):
+            return ""
+        if low in ("true", "1", "yes", "on"):
+            return ", compile=True"
+        return f", compile={comp!r}"
+    return ", compile=True" if comp else ""
 
 
 def to_python(spec: dict, plan: dict, version: str, path: str | None = None) -> str:
@@ -143,9 +160,13 @@ def to_python(spec: dict, plan: dict, version: str, path: str | None = None) -> 
         imports.append("from lam4 import MenaCalculator")
         calc = (
             f"MenaCalculator.from_checkpoint({m.get('path')!r}, device={d['device']!r}, dtype={d['dtype']!r}, lot={d['lot']!r}"
+            + (f", precision={d['precision']!r}" if d.get("precision", "auto") != "auto" else "")
             + (f", skin={d['skin']}" if d["skin"] else "")
             + (", low_memory=True" if d["low_memory"] else "")
-            + (", compile=True" if d.get("compile") else "")
+            + _compile_kwarg(d.get("compile"))
+            + (f", edge_mode={d['edge_mode']!r}" if d.get("edge_mode") else "")
+            + (f", add_dispersion={d['add_dispersion']!r}" if d.get("add_dispersion") is not None else "")
+            + (f", u_flag={d['u_flag']}" if d.get("u_flag") is not None else "")
             + ")"
         )
     else:
@@ -154,7 +175,7 @@ def to_python(spec: dict, plan: dict, version: str, path: str | None = None) -> 
             f"MenaLAMCalculator.from_checkpoint({m.get('path')!r}, device={d['device']!r}, dtype={d['dtype']!r}, lot={d['lot']!r}"
             + (f", skin={d['skin']}" if d["skin"] else "")
             + (", low_memory=True" if d["low_memory"] else "")
-            + (", compile=True" if d.get("compile") else "")
+            + _compile_kwarg(d.get("compile"))
             + ")"
         )
 
@@ -181,7 +202,7 @@ def to_python(spec: dict, plan: dict, version: str, path: str | None = None) -> 
         ext = "cif" if analysis["domain"] == "crystal" else ("extxyz" if analysis["domain"] == "slab" else "xyz")
         body = f"from ase.optimize import {p['optimizer']}\n{filt}opt = {p['optimizer']}({target})\nopt.run(fmax={p['fmax']}, steps={p['max_steps']})\natoms.write('relaxed.{ext}')\n"
     elif task == "md":
-        body = _md_body(p)
+        body = _md_body(p, is_mol=is_mol)
     elif task == "vibrations":
         pre = f"from ase.optimize import LBFGS\nLBFGS(atoms).run(fmax={p['fmax']}, steps=1000)\n" if p.get("prerelax") else ""
         body = f"{pre}from ase.vibrations import Vibrations\nvib = Vibrations(atoms, delta={p['displacement']})\nvib.run()\nvib.summary()\nvib.clean()\n"
@@ -197,6 +218,8 @@ def to_python(spec: dict, plan: dict, version: str, path: str | None = None) -> 
         )
     elif task == "neb":
         end_lines = [f"end_atoms = {expr2}"]
+        if use_read2:
+            end_lines.append('end_atoms.info.pop("lot", None)  # the level of theory is set on the calculator below')
         if is_mol:
             end_lines.append(f'end_atoms.info["charge"] = {q}')
             end_lines.append(f'end_atoms.info["spin"] = {spn}')
@@ -234,5 +257,5 @@ def _default_name(s: dict) -> str:
     ext = {"xyz": "xyz", "extxyz": "extxyz", "cif": "cif", "vasp": "vasp"}[s["format"]]
     raw = str(s.get("name") or "structure")
     stem = Path(raw).stem if Path(raw).suffix.lower() in structures.FILE_FORMATS else raw
-    name = "".join(c for c in stem if c.isalnum() or c in "-_") or "structure"
+    name = "".join(c for c in stem if c.isalnum() or c in "-_.") or "structure"
     return f"{name}.{ext}"

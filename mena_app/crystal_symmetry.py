@@ -213,16 +213,25 @@ def find_crystal_symmetry(
     for R in lat_rots:
         p0_rot = frac_w[p0] @ R.T
         cand_ts = (frac_w[rare_idx] - p0_rot) % 1.0
+        rot_by_z = [(frac_w[idx_z] @ R.T) % 1.0 for idx_z in by_z]
         accepted_ts: list[np.ndarray] = []
         for t0 in cand_ts:
             perm = np.empty(n, dtype=np.int64)
             ok = True
-            for idx_z in by_z:
+            for idx_z, r_z in zip(by_z, rot_by_z):
                 m = len(idx_z)
-                img = frac_w[idx_z] @ R.T + t0
+                img = r_z + t0
+                if m > 8:
+                    p_df = img[:4, None, :] - frac_w[None, idx_z, :]
+                    p_df -= np.round(p_df)
+                    p_dfc = p_df @ C
+                    if float(np.sum(p_dfc * p_dfc, axis=-1).min(axis=1).max()) > loose2:
+                        ok = False
+                        break
                 df = img[:, None, :] - frac_w[None, idx_z, :]
                 df -= np.round(df)
-                d2 = np.einsum("ijk,ijk->ij", df @ C, df @ C)
+                dfc = df @ C
+                d2 = np.sum(dfc * dfc, axis=-1)
                 best = np.argmin(d2, axis=1)
                 if float(d2[np.arange(m), best].max()) > loose2 or np.bincount(best, minlength=m).min() == 0:
                     ok = False
@@ -276,6 +285,7 @@ def find_crystal_symmetry(
     return {
         "rotations": rotations,
         "translations": translations,
+        "perms": perms,
         "equivalent_atoms": eq,
         "pointgroup": pg,
         "crystal_system": cs,

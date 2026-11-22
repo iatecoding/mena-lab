@@ -13,13 +13,14 @@ import time
 import numpy as np
 from ase import Atoms, units
 from ase.constraints import FixConstraint
-from ase.md.velocitydistribution import Stationary, ZeroRotation
+from ase.md.velocitydistribution import Stationary
 from ase.md.verlet import VelocityVerlet
 
 from mena_app import backends, report as R
 from mena_app import runner, structures, system
 from mena_app.runtime import Cancelled, UserError
 from mena_app.tasks.common import prepare_atoms, thermalize, write_trajectory
+from mena_app.tasks.md import _zero_rotation_safe
 
 RESERVE_GB = 3.0
 MAX_VIS_ATOMS = 1800
@@ -131,21 +132,50 @@ def _make_vis_extractor(atoms, unit):
     return _mol
 
 
-def _used_gb(device: str) -> float:
+def _sync_for(device: str):
     import torch
 
+    dev = str(device)
+    if dev.startswith("mps") and hasattr(torch, "mps"):
+        return torch.mps.synchronize
+    if dev.startswith("cuda") and torch.cuda.is_available():
+        def _sync():
+            with torch.cuda.device(dev):
+                torch.cuda.synchronize(dev)
+        return _sync
+    return lambda: None
+
+
+def _reset_peak_cuda(device: str) -> None:
+    import torch
+
+    dev = str(device)
+    if dev.startswith("cuda") and torch.cuda.is_available():
+        with torch.cuda.device(dev):
+            torch.cuda.reset_peak_memory_stats(dev)
+
+
+def _mem_breakdown(device: str) -> dict[str, float]:
+    import torch
+
+    dev = str(device)
     rss = system.process_rss_bytes() / 1e9
-    gpu = (
-        torch.mps.driver_allocated_memory() / 1e9
-        if device == "mps" and hasattr(torch, "mps")
-        else (torch.cuda.max_memory_reserved() / 1e9 if device == "cuda" and torch.cuda.is_available() else 0.0)
-    )
-    return rss + gpu
+    if dev.startswith("cuda") and torch.cuda.is_available():
+        with torch.cuda.device(dev):
+            alloc = torch.cuda.max_memory_allocated(dev) / 1e9
+            res = torch.cuda.max_memory_reserved(dev) / 1e9
+        return {"peak_gb": res, "host_rss_gb": rss, "gpu_allocated_gb": alloc, "gpu_reserved_gb": res}
+    if dev.startswith("mps") and hasattr(torch, "mps"):
+        gpu = torch.mps.driver_allocated_memory() / 1e9
+        return {"peak_gb": rss + gpu, "host_rss_gb": rss, "gpu_allocated_gb": gpu, "gpu_reserved_gb": gpu}
+    return {"peak_gb": rss, "host_rss_gb": rss, "gpu_allocated_gb": 0.0, "gpu_reserved_gb": 0.0}
+
+
+def _used_gb(device: str) -> float:
+    return _mem_breakdown(device)["peak_gb"]
 
 
 def _run_visual_md(ctx, unit):
-    import torch
-
     p, d = ctx.params, ctx.decision
     dev = d["device"]
     n0 = len(unit)
@@ -159,15 +189,12 @@ def _run_visual_md(ctx, unit):
     dt_fs = 0.5 if is_mol else 1.5
     pulse_temp = float(p.get("temperature_K", 600.0))
 
-    sync = (
-        torch.mps.synchronize
-        if dev == "mps" and hasattr(torch, "mps")
-        else (torch.cuda.synchronize if dev == "cuda" and torch.cuda.is_available() else (lambda: None))
-    )
+    sync = _sync_for(dev)
     calc_dec = {**d, "dtype": "float32", "skin": 0.6}
     atoms.calc = backends.build(ctx.model, calc_dec)
     sync()
     base_gb = _used_gb(dev)
+    _reset_peak_cuda(dev)
 
     rng = np.random.default_rng(0)
     if is_mol:
@@ -186,7 +213,7 @@ def _run_visual_md(ctx, unit):
         atoms.set_momenta(mom)
         Stationary(atoms)
         if len(atoms) > 1:
-            ZeroRotation(atoms)
+            _zero_rotation_safe(atoms)
         r_max = float(np.linalg.norm(atoms.positions - center, axis=1).max()) if len(atoms) else 5.0
         atoms.set_constraint(_SphericalWall(center, radius=r_max + 2.0, k_spring=0.25))
     else:
@@ -302,6 +329,7 @@ def _run_visual_md(ctx, unit):
     ]
     files = [write_trajectory(ctx, frames)]
     vis_ref = frames[0]
+    mem_final = _mem_breakdown(dev)
     return {
         "headline": f"{unit_formula} ({n:,} atoms, {edges:,} neighbour pairs on {dev.upper()}): {med_at_s:,.0f} atoms/s ({med_at_ms:.1f} atoms/ms, {med_ms:.1f} ms/step), {peak_gb:.2f} GB peak memory.",
         "tiles": tiles,
@@ -318,8 +346,23 @@ def _run_visual_md(ctx, unit):
         "viewer": R.viewer([R.frame(fr, None, f"{i * dt_fs:.1f} fs · {n:,} atoms") for i, fr in enumerate(frames)], vis_ref),
         "files": files,
         "notes": [f"Visual 3D trajectory shows {len(vis_ref):,} atoms so playback stays smooth at 60 FPS."] if len(vis_ref) < n else [],
-        "raw": {"n": n, "edges": edges, "median_ms": med_ms, "atoms_per_ms": med_at_ms, "atoms_per_s": med_at_s, "peak_gb": peak_gb},
+        "raw": {"n": n, "edges": edges, "median_ms": med_ms, "atoms_per_ms": med_at_ms, "atoms_per_s": med_at_s,
+                "peak_gb": peak_gb, "host_rss_gb": mem_final["host_rss_gb"],
+                "gpu_allocated_gb": mem_final["gpu_allocated_gb"], "gpu_reserved_gb": mem_final["gpu_reserved_gb"]},
     }
+
+
+def _free_device_gb(d: dict) -> float:
+    dev = str(d.get("device") or "cpu")
+    if dev.startswith("cuda"):
+        idx = int(dev.split(":", 1)[1]) if dev.startswith("cuda:") and dev[5:].isdigit() else 0
+        vram_b = system.available_vram_bytes(idx)
+        if vram_b is not None:
+            return vram_b / 1e9
+        if d.get("free_gb") is not None:
+            return float(d["free_gb"])
+        return 0.0
+    return system.available_memory_bytes() / 1e9
 
 
 def run(ctx):
@@ -342,9 +385,10 @@ def run(ctx):
         for r in reps:
             ctx.check()
             n = n0 * r[0] * r[1] * r[2]
-            free = system.available_memory_bytes() / 1e9
+            free = _free_device_gb(d)
             if last_gb and free and last_gb * (n / last_n) > free - min(RESERVE_GB, 0.35 * free):
-                stopped = f"Stopped {mode} at {last_n:,} atoms: the next size would need about {last_gb * n / last_n:.1f} GB of the {free:.1f} GB free."
+                mem_kind = "VRAM" if str(d.get("device") or "").startswith("cuda") else "memory"
+                stopped = f"Stopped {mode} at {last_n:,} atoms: the next size would need about {last_gb * n / last_n:.1f} GB of the {free:.1f} GB free {mem_kind}."
                 break
             is_mol = not any(unit.pbc)
             grid_lbl = "grid" if is_mol else "cells"
@@ -353,7 +397,7 @@ def run(ctx):
             ctx.status(f"{mode}: {n:,} atoms ({r[0]}×{r[1]}×{r[2]} {grid_lbl}) on {d['device']}")
             ctx.flush()
             req = {"kind": "bench", "model": ctx.model, "device": d["device"], "structure": ctx.spec["structure"], "repeat": list(r),
-                   "low_memory": low, "steps": p["steps"]}
+                   "low_memory": low, "compile": bool(d.get("compile", False)) and not low, "steps": p["steps"]}
             res = runner.isolated_python(ctx.model, ["-m", "mena_app.calibrate"], json.dumps(req), timeout=1800)
             done += 1
             try:
@@ -396,8 +440,9 @@ def run(ctx):
             raise Cancelled()
     if not rows:
         raise UserError(stopped or "No size finished.")
-    top = best["standard"]
-    fast = max((r for r in rows if r["mode"] == "standard"), key=lambda r: r["atoms_per_ms"])
+    primary_mode = "standard" if "standard" in best else next(iter(best))
+    top = best[primary_mode]
+    fast = max((r for r in rows if r["mode"] == primary_mode), key=lambda r: r["atoms_per_ms"])
     tiles = [R.tile("largest", "Largest system", top["n"], "atoms", 0),
              R.tile("atoms_s", "Best throughput (atoms/s)", fast["atoms_per_ms"] * 1000.0, "atoms/s", 0, better="higher", hint=f"at {fast['n']:,} atoms"),
              R.tile("best_speed", "Best speed (atoms/ms)", fast["atoms_per_ms"], "atoms/ms", 1, better="higher", hint=f"at {fast['n']:,} atoms"),

@@ -107,6 +107,8 @@ export const COLORMAPS = {
   charge:  { label: 'Charge q (e)', unit: 'e', stops: ['#b91c1c', '#f1f5f9', '#1d4ed8'], diverging: true },
   spins:   { label: 'Spin s (e)', unit: 'e', stops: ['#7c3aed', '#f1f5f9', '#0d9488'], diverging: true },
   spin:    { label: 'Spin s (e)', unit: 'e', stops: ['#7c3aed', '#f1f5f9', '#0d9488'], diverging: true },
+  unpaired: { label: 'Unpaired electrons (index)', unit: '', stops: ['#f1f5f9', '#0d9488', '#134e4a'], diverging: false, zeroFloor: true, minHi: 0.3 },
+  pauli:   { label: 'Pauli repulsion (eV)', unit: 'eV', stops: ['#fef9c3', '#f59e0b', '#b91c1c'], diverging: false, zeroFloor: true },
   alpha:   { label: 'Polarizability α (Å³)', unit: 'Å³', stops: ['#e0e7ff', '#4f46e5', '#1e1b4b'], diverging: false },
   fmag:    { label: 'Force |F| (eV/Å)', unit: 'eV/Å', stops: ['#dcfce7', '#f59e0b', '#dc2626'], diverging: false, zeroFloor: true },
 };
@@ -120,7 +122,7 @@ export function scalarRange(mode, values) {
     return { lo: -m, mid: 0, hi: m, diverging: true };
   }
   if (cm.zeroFloor) {
-    let m = 0.01;
+    let m = cm.minHi || 0.01;  // minHi: a closed-shell molecule's noise-level values stay pale instead of filling the scale
     for (let i = 0; i < vs.length; i++) if (vs[i] > m) m = vs[i];
     return { lo: 0, mid: m / 2, hi: m, diverging: false };
   }

@@ -1,46 +1,462 @@
-{"created": "2026-11-02 08:21", "machine": {"platform": "Darwin arm64", "python": "3.14.8", "total_gb": 38.65, "available_gb": 12.68, "cpu_count": 14, "performance_cores": 10, "load_1min": 7.98, "busy": false, "devices": ["cpu", "mps"], "torch": "2.13.0", "cuda_name": null, "probe_error": null}, "points": [
- {"backend": "lam", "domain": "crystal", "device": "cpu", "n": 8, "x": 368, "cold_ms": 41.95979097858071, "warm_ms": 17.374708026181906, "peak_gb": 0.443711488},
- {"backend": "lam", "domain": "crystal", "device": "cpu", "n": 64, "x": 2944, "cold_ms": 67.93779198778793, "warm_ms": 42.885708971880376, "peak_gb": 0.46768128},
- {"backend": "lam", "domain": "crystal", "device": "cpu", "n": 216, "x": 9936, "cold_ms": 129.20812499942258, "warm_ms": 95.60779097955674, "peak_gb": 0.602816512},
- {"backend": "lam", "domain": "crystal", "device": "cpu", "n": 512, "x": 23552, "cold_ms": 228.72283298056573, "warm_ms": 179.55658299615607, "peak_gb": 0.87711744},
- {"backend": "lam", "domain": "crystal", "device": "cpu", "n": 1728, "x": 79488, "cold_ms": 629.3376249959692, "warm_ms": 541.3444580044597, "peak_gb": 2.055913472},
- {"backend": "lam", "domain": "molecule", "device": "cpu", "n": 3, "x": 6, "cold_ms": 32.81416604295373, "warm_ms": 14.072333986405283, "peak_gb": 0.445661184},
- {"backend": "lam", "domain": "molecule", "device": "cpu", "n": 12, "x": 132, "cold_ms": 35.10070900665596, "warm_ms": 16.81945798918605, "peak_gb": 0.445120512},
- {"backend": "lam", "domain": "molecule", "device": "cpu", "n": 33, "x": 662, "cold_ms": 51.1796249775216, "warm_ms": 30.236750026233494, "peak_gb": 0.444710912},
- {"backend": "lam", "domain": "molecule", "device": "cpu", "n": 96, "x": 3648, "cold_ms": 108.99345797952265, "warm_ms": 86.78975002840161, "peak_gb": 0.461094912},
- {"backend": "lam", "domain": "molecule", "device": "cpu", "n": 300, "x": 15306, "cold_ms": 347.6102910353802, "warm_ms": 288.62908302107826, "peak_gb": 0.951353344},
- {"backend": "lam", "domain": "molecule", "device": "cpu", "n": 1020, "x": 61676, "cold_ms": 2516.5806250297464, "warm_ms": 2348.005125008058, "peak_gb": 6.169460736},
- {"backend": "lam", "domain": "crystal", "device": "mps", "n": 8, "x": 368, "cold_ms": 1175.1838329946622, "warm_ms": 22.681084054056555, "peak_gb": 0.729612288},
- {"backend": "lam", "domain": "crystal", "device": "mps", "n": 64, "x": 2944, "cold_ms": 484.6707910182886, "warm_ms": 23.90550001291558, "peak_gb": 0.789921792},
- {"backend": "lam", "domain": "crystal", "device": "mps", "n": 216, "x": 9936, "cold_ms": 383.4685000474565, "warm_ms": 35.62329203123227, "peak_gb": 0.9711616000000001},
- {"backend": "lam", "domain": "crystal", "device": "mps", "n": 512, "x": 23552, "cold_ms": 565.7324999920093, "warm_ms": 68.66970902774483, "peak_gb": 1.8834718719999999},
- {"backend": "lam", "domain": "crystal", "device": "mps", "n": 1728, "x": 79488, "cold_ms": 468.58937497017905, "warm_ms": 210.32449998892844, "peak_gb": 3.0697553920000002},
- {"backend": "lam", "domain": "molecule", "device": "mps", "n": 3, "x": 6, "cold_ms": 1121.4638749952428, "warm_ms": 72.30533397523686, "peak_gb": 0.728727552},
- {"backend": "lam", "domain": "molecule", "device": "mps", "n": 12, "x": 132, "cold_ms": 1288.458124967292, "warm_ms": 108.73295803321525, "peak_gb": 0.7397376},
- {"backend": "lam", "domain": "molecule", "device": "mps", "n": 33, "x": 662, "cold_ms": 500.1717080012895, "warm_ms": 124.5691659860313, "peak_gb": 0.739753984},
- {"backend": "lam", "domain": "molecule", "device": "mps", "n": 96, "x": 3648, "cold_ms": 474.01270898990333, "warm_ms": 109.51587499585003, "peak_gb": 0.80003072},
- {"backend": "lam", "domain": "molecule", "device": "mps", "n": 300, "x": 15306, "cold_ms": 762.9175829933956, "warm_ms": 132.81708303838968, "peak_gb": 1.92135168},
- {"backend": "lam", "domain": "molecule", "device": "mps", "n": 1020, "x": 61676, "cold_ms": 999.7994170407765, "warm_ms": 481.3754580100067, "peak_gb": 7.438729216},
- {"backend": "lam4", "domain": "crystal", "device": "cpu", "n": 8, "x": 368, "cold_ms": 90.57216695509851, "warm_ms": 21.927041991148144, "peak_gb": 0.418103296},
- {"backend": "lam4", "domain": "crystal", "device": "cpu", "n": 64, "x": 2944, "cold_ms": 126.31058396073058, "warm_ms": 58.182875043712556, "peak_gb": 0.451411968},
- {"backend": "lam4", "domain": "crystal", "device": "cpu", "n": 216, "x": 9936, "cold_ms": 216.17983299074695, "warm_ms": 132.8175839735195, "peak_gb": 0.688881664},
- {"backend": "lam4", "domain": "crystal", "device": "cpu", "n": 512, "x": 23552, "cold_ms": 356.9660829962231, "warm_ms": 257.0472080260515, "peak_gb": 1.126678528},
- {"backend": "lam4", "domain": "crystal", "device": "cpu", "n": 1728, "x": 79488, "cold_ms": 974.7900840011425, "warm_ms": 807.8171669621952, "peak_gb": 2.854633472},
- {"backend": "lam4", "domain": "molecule", "device": "cpu", "n": 3, "x": 6, "cold_ms": 72.76779197854921, "warm_ms": 21.31520799594, "peak_gb": 0.419692544},
- {"backend": "lam4", "domain": "molecule", "device": "cpu", "n": 12, "x": 132, "cold_ms": 77.5180000346154, "warm_ms": 27.64637500513345, "peak_gb": 0.424361984},
- {"backend": "lam4", "domain": "molecule", "device": "cpu", "n": 33, "x": 662, "cold_ms": 97.76162501657382, "warm_ms": 43.420500005595386, "peak_gb": 0.43548672},
- {"backend": "lam4", "domain": "molecule", "device": "cpu", "n": 96, "x": 3648, "cold_ms": 153.79700000630692, "warm_ms": 98.1136669870466, "peak_gb": 0.506527744},
- {"backend": "lam4", "domain": "molecule", "device": "cpu", "n": 300, "x": 15306, "cold_ms": 279.7412920044735, "warm_ms": 207.83366600517184, "peak_gb": 0.896647168},
- {"backend": "lam4", "domain": "molecule", "device": "cpu", "n": 1020, "x": 61676, "cold_ms": 798.0831249733455, "warm_ms": 651.8432919983752, "peak_gb": 2.397175808},
- {"backend": "lam4", "domain": "crystal", "device": "mps", "n": 8, "x": 368, "cold_ms": 433.7005839915946, "warm_ms": 20.659708010498434, "peak_gb": 0.757039104},
- {"backend": "lam4", "domain": "crystal", "device": "mps", "n": 64, "x": 2944, "cold_ms": 423.1783750001341, "warm_ms": 20.39670798694715, "peak_gb": 0.82960384},
- {"backend": "lam4", "domain": "crystal", "device": "mps", "n": 216, "x": 9936, "cold_ms": 506.2622500117868, "warm_ms": 23.347124981228262, "peak_gb": 1.960558592},
- {"backend": "lam4", "domain": "crystal", "device": "mps", "n": 512, "x": 23552, "cold_ms": 502.2746669710614, "warm_ms": 34.564917034003884, "peak_gb": 2.06004224},
- {"backend": "lam4", "domain": "crystal", "device": "mps", "n": 1728, "x": 79488, "cold_ms": 694.3621670361608, "warm_ms": 88.75662501668558, "peak_gb": 3.584540672},
- {"backend": "lam4", "domain": "molecule", "device": "mps", "n": 3, "x": 6, "cold_ms": 545.4116250039078, "warm_ms": 30.72174999397248, "peak_gb": 0.784252928},
- {"backend": "lam4", "domain": "molecule", "device": "mps", "n": 12, "x": 132, "cold_ms": 940.5868329922669, "warm_ms": 30.761250003706664, "peak_gb": 0.7970488320000001},
- {"backend": "lam4", "domain": "molecule", "device": "mps", "n": 33, "x": 662, "cold_ms": 684.8639999516308, "warm_ms": 30.349542037583888, "peak_gb": 0.8167260159999999},
- {"backend": "lam4", "domain": "molecule", "device": "mps", "n": 96, "x": 3648, "cold_ms": 533.4564170334488, "warm_ms": 31.22808301122859, "peak_gb": 0.914915328},
- {"backend": "lam4", "domain": "molecule", "device": "mps", "n": 300, "x": 15306, "cold_ms": 632.7459589811042, "warm_ms": 67.56229198072106, "peak_gb": 2.106753024},
- {"backend": "lam4", "domain": "molecule", "device": "mps", "n": 1020, "x": 61676, "cold_ms": 1320.6455000326969, "warm_ms": 133.5938749834895, "peak_gb": 3.598450688}
-]}
+{
+ "created": "2026-11-12 19:44",
+ "machine": {
+  "platform": "Darwin arm64",
+  "python": "3.14.8",
+  "total_gb": 38.65,
+  "available_gb": 20.36,
+  "cpu_count": 14,
+  "performance_cores": 10,
+  "load_1min": 2.97,
+  "busy": false,
+  "devices": [
+   "cpu",
+   "mps"
+  ],
+  "torch": "2.13.0",
+  "cuda_name": null,
+  "probe_error": null
+ },
+ "points": [
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 3,
+   "x": 6,
+   "cold_ms": 68.44170899421442,
+   "warm_ms": 19.971500005340204,
+   "peak_gb": 0.420528128
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 12,
+   "x": 132,
+   "cold_ms": 72.10662499710452,
+   "warm_ms": 25.414666990400292,
+   "peak_gb": 0.4263936
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 33,
+   "x": 662,
+   "cold_ms": 85.98870900459588,
+   "warm_ms": 39.081250011804514,
+   "peak_gb": 0.430669824
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 96,
+   "x": 3648,
+   "cold_ms": 248.70412499876693,
+   "warm_ms": 82.87345799908508,
+   "peak_gb": 0.545767424
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 300,
+   "x": 15306,
+   "cold_ms": 330.683082996984,
+   "warm_ms": 155.5320000043139,
+   "peak_gb": 0.979091456
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 1020,
+   "x": 61676,
+   "cold_ms": 734.353291001753,
+   "warm_ms": 508.71416700829286,
+   "peak_gb": 2.410037248
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 8,
+   "x": 368,
+   "cold_ms": 82.58812500571366,
+   "warm_ms": 20.24712499405723,
+   "peak_gb": 0.416874496
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 64,
+   "x": 2944,
+   "cold_ms": 112.25858399120625,
+   "warm_ms": 48.98145799234044,
+   "peak_gb": 0.45195264
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 216,
+   "x": 9936,
+   "cold_ms": 177.94770900218282,
+   "warm_ms": 99.22333399299532,
+   "peak_gb": 0.687538176
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 512,
+   "x": 23552,
+   "cold_ms": 279.02095900208224,
+   "warm_ms": 183.59145800059196,
+   "peak_gb": 1.113341952
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 1728,
+   "x": 79488,
+   "cold_ms": 698.895833993447,
+   "warm_ms": 551.04558300809,
+   "peak_gb": 2.8942336
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 3,
+   "x": 6,
+   "cold_ms": 557.4699580029119,
+   "warm_ms": 26.661666997824796,
+   "peak_gb": 0.772620288
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 12,
+   "x": 132,
+   "cold_ms": 683.5634589951951,
+   "warm_ms": 29.7687090060208,
+   "peak_gb": 0.771735552
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 33,
+   "x": 662,
+   "cold_ms": 493.7516669888282,
+   "warm_ms": 31.23520899680443,
+   "peak_gb": 0.783417344
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 96,
+   "x": 3648,
+   "cold_ms": 381.38045799860265,
+   "warm_ms": 26.165667004534043,
+   "peak_gb": 0.809828352
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 300,
+   "x": 15306,
+   "cold_ms": 582.0843749970663,
+   "warm_ms": 30.43741600413341,
+   "peak_gb": 0.913752064
+  },
+  {
+   "backend": "lam4",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 1020,
+   "x": 61676,
+   "cold_ms": 673.375375001342,
+   "warm_ms": 54.734000004827976,
+   "peak_gb": 1.119666176
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 8,
+   "x": 368,
+   "cold_ms": 706.5540000039618,
+   "warm_ms": 22.288249994744547,
+   "peak_gb": 0.74227712
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 64,
+   "x": 2944,
+   "cold_ms": 307.50345799606293,
+   "warm_ms": 20.557125011691824,
+   "peak_gb": 0.76734464
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 216,
+   "x": 9936,
+   "cold_ms": 343.70575001230463,
+   "warm_ms": 19.52920800249558,
+   "peak_gb": 0.81977344
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 512,
+   "x": 23552,
+   "cold_ms": 746.4365000050748,
+   "warm_ms": 27.195583999855444,
+   "peak_gb": 0.998883328
+  },
+  {
+   "backend": "lam4",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 1728,
+   "x": 79488,
+   "cold_ms": 1274.812750009005,
+   "warm_ms": 56.35979199723806,
+   "peak_gb": 2.458943488
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 8,
+   "x": 368,
+   "cold_ms": 31.66383400093764,
+   "warm_ms": 14.468708002823405,
+   "peak_gb": 0.357564416
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 64,
+   "x": 2944,
+   "cold_ms": 50.82354199839756,
+   "warm_ms": 32.20391699869651,
+   "peak_gb": 0.395902976
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 216,
+   "x": 9936,
+   "cold_ms": 89.23741700709797,
+   "warm_ms": 61.6651250020368,
+   "peak_gb": 0.53477376
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 512,
+   "x": 23552,
+   "cold_ms": 146.52333299454767,
+   "warm_ms": 105.2431670104852,
+   "peak_gb": 0.831193088
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "cpu",
+   "n": 1728,
+   "x": 79488,
+   "cold_ms": 365.9662499994738,
+   "warm_ms": 290.6405420071678,
+   "peak_gb": 1.977892864
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 3,
+   "x": 6,
+   "cold_ms": 27.56212498934474,
+   "warm_ms": 10.594209001283161,
+   "peak_gb": 0.353943552
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 12,
+   "x": 132,
+   "cold_ms": 31.470458998228423,
+   "warm_ms": 15.56912501109764,
+   "peak_gb": 0.357597184
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 33,
+   "x": 662,
+   "cold_ms": 43.23875000409316,
+   "warm_ms": 24.337042006663978,
+   "peak_gb": 0.357974016
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 96,
+   "x": 3648,
+   "cold_ms": 91.44074999494478,
+   "warm_ms": 69.12695900246035,
+   "peak_gb": 0.399163392
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 300,
+   "x": 15306,
+   "cold_ms": 270.5766660074005,
+   "warm_ms": 226.362125002197,
+   "peak_gb": 0.92372992
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "cpu",
+   "n": 1020,
+   "x": 61676,
+   "cold_ms": 2053.1412080017617,
+   "warm_ms": 2021.039875005954,
+   "peak_gb": 6.176391168
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 8,
+   "x": 368,
+   "cold_ms": 490.9652920032386,
+   "warm_ms": 18.540457997005433,
+   "peak_gb": 0.654835712
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 64,
+   "x": 2944,
+   "cold_ms": 217.97379200870637,
+   "warm_ms": 18.991416989592835,
+   "peak_gb": 0.712704
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 216,
+   "x": 9936,
+   "cold_ms": 425.05483400600497,
+   "warm_ms": 26.09891699103173,
+   "peak_gb": 0.893730816
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 512,
+   "x": 23552,
+   "cold_ms": 299.3849579943344,
+   "warm_ms": 43.37779199704528,
+   "peak_gb": 1.813905408
+  },
+  {
+   "backend": "lam",
+   "domain": "crystal",
+   "device": "mps",
+   "n": 1728,
+   "x": 79488,
+   "cold_ms": 402.3654580087168,
+   "warm_ms": 124.71000000368804,
+   "peak_gb": 3.0177198080000003
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 3,
+   "x": 6,
+   "cold_ms": 347.78020800149534,
+   "warm_ms": 50.87900000216905,
+   "peak_gb": 0.646660096
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 12,
+   "x": 132,
+   "cold_ms": 1039.3602080002893,
+   "warm_ms": 59.46625000797212,
+   "peak_gb": 0.653869056
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 33,
+   "x": 662,
+   "cold_ms": 501.3470830017468,
+   "warm_ms": 69.45862500288058,
+   "peak_gb": 0.657702912
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 96,
+   "x": 3648,
+   "cold_ms": 525.126624997938,
+   "warm_ms": 70.3272079990711,
+   "peak_gb": 0.716898304
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 300,
+   "x": 15306,
+   "cold_ms": 554.1461249958957,
+   "warm_ms": 60.925375000806525,
+   "peak_gb": 1.8379079680000001
+  },
+  {
+   "backend": "lam",
+   "domain": "molecule",
+   "device": "mps",
+   "n": 1020,
+   "x": 61676,
+   "cold_ms": 1154.8658330139006,
+   "warm_ms": 426.30424999515526,
+   "peak_gb": 7.382614016
+  }
+ ]
+}

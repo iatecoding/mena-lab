@@ -135,6 +135,99 @@ def performance_cores() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+def cuda_vram_info() -> list[dict]:
+    """Query per-GPU free/total VRAM (GB) via nvidia-smi without importing torch or allocating a CUDA context."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return []
+    try:
+        r = subprocess.run(
+            [exe, "--query-gpu=index,name,memory.free,memory.total,uuid", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return []
+        rows: list[dict] = []
+        for line in r.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 4:
+                continue
+            try:
+                idx = int(parts[0])
+                free_mib = float(parts[2])
+                tot_mib = float(parts[3])
+            except ValueError:
+                continue
+            row = {
+                "index": idx,
+                "id": f"cuda:{idx}",
+                "name": parts[1],
+                "vram_free_bytes": int(free_mib * 1024 * 1024),
+                "vram_total_bytes": int(tot_mib * 1024 * 1024),
+                "vram_free_gb": round(free_mib * 1024 * 1024 / 1e9, 2),
+                "vram_total_gb": round(tot_mib * 1024 * 1024 / 1e9, 2),
+            }
+            if len(parts) >= 5 and parts[4]:
+                row["uuid"] = parts[4]
+            rows.append(row)
+        return rows
+    except Exception:
+        return []
+
+
+def _visible_cuda_tokens() -> list[str] | None:
+    """Return physical CUDA selectors exposed via CUDA_VISIBLE_DEVICES, or None if unset."""
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    s = raw.strip()
+    if s == "" or s.lower() in ("-1", "none", "void", "nodevfiles"):
+        return []
+    vis: list[str] = []
+    for tok in s.split(","):
+        t = tok.strip()
+        if not t:
+            continue
+        if t.startswith("-") and t[1:].isdigit():
+            break
+        vis.append(t)
+    return vis
+
+
+def cuda_row_for_logical_index(rows: list[dict], device_index: int = 0) -> dict | None:
+    """Resolve logical `cuda:{device_index}` against physical `nvidia-smi` rows honoring `CUDA_VISIBLE_DEVICES`."""
+    idx = int(device_index)
+    vis = _visible_cuda_tokens()
+    if vis is None:
+        for row in rows:
+            if row.get("index") == idx:
+                return row
+        return None
+    if idx < 0 or idx >= len(vis):
+        return None
+    sel = vis[idx]
+    if sel.isdigit():
+        phys = int(sel)
+        for row in rows:
+            if row.get("index") == phys:
+                return row
+        return None
+    for row in rows:
+        uuid = str(row.get("uuid", ""))
+        if uuid and (uuid == sel or uuid.startswith(sel)):
+            return row
+    return None
+
+
+def available_vram_bytes(device_index: int = 0) -> int | None:
+    """Live free VRAM in bytes for logical `cuda:{device_index}` without creating a CUDA context, or None if unavailable."""
+    row = cuda_row_for_logical_index(cuda_vram_info(), device_index)
+    return None if row is None else int(row["vram_free_bytes"])
+
+
 def snapshot() -> dict:
     total, avail = total_memory_bytes(), available_memory_bytes()
     try:

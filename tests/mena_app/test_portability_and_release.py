@@ -53,19 +53,28 @@ def test_pyproject_ships_lam4_and_required_package_data():
 
 
 def test_default_model_routing_materials_400k_molecules_lam5(monkeypatch, tmp_path):
-    """Default model: `lam-400k` on `crystal` & `slab`, `lam5-v1` on `molecule`; manual `lam5-v1` on slabs still works."""
+    """Default model: `lam6-v1` on `crystal` & `slab` when installed, else `lam-400k`; `lam5-v1` on `molecule`;
+    manual `lam5-v1` on slabs still works."""
     monkeypatch.setenv("MENA_HOME", str(tmp_path / "home"))
     declared = json.loads((REPO_ROOT / "mena_app" / "data" / "models.json").read_text(encoding="utf-8"))["models"]
     by_id = {m["id"]: m for m in declared}
 
-    assert by_id["lam-400k"]["rank"]["crystal"] == 0
-    assert by_id["lam-400k"]["rank"]["slab"] == 0
+    assert by_id["lam6-v1"]["rank"]["crystal"] == 0 and by_id["lam6-v1"]["rank"]["slab"] == 0
+    assert by_id["lam-400k"]["rank"]["crystal"] == 1
+    assert by_id["lam-400k"]["rank"]["slab"] == 1
     assert by_id["lam5-v1"]["rank"]["molecule"] == 0
     assert by_id["lam5-v1"]["rank"]["crystal"] > by_id["lam-400k"]["rank"]["crystal"]
     assert by_id["lam5-v1"]["rank"]["slab"] > by_id["lam-400k"]["rank"]["slab"]
 
-    # Simulate a machine where ALL declared checkpoints exist on disk
-    fake_all = [{**m, "available": True, "path": str(tmp_path / f"{m['id']}.pt")} for m in declared]
+    # When all declared checkpoints are usable, auto routes materials to lam6-v1 and molecules to lam5-v1
+    all_usable = [{**m, "available": True, "downloadable": False, "path": str(tmp_path / f"{m['id']}.pt")} for m in declared]
+    monkeypatch.setattr(models, "all_models", lambda: all_usable)
+    assert models.choose("auto", "molecule")["id"] == "lam5-v1"
+    assert models.choose("auto", "crystal")["id"] == "lam6-v1"
+    assert models.choose("auto", "slab")["id"] == "lam6-v1"
+
+    # Simulate a machine where lam6-v1 is neither installed nor downloadable -> falls back to lam-400k
+    fake_all = [{**m, "available": m["id"] != "lam6-v1", "downloadable": False, "path": str(tmp_path / f"{m['id']}.pt")} for m in declared]
     monkeypatch.setattr(models, "all_models", lambda: fake_all)
 
     assert models.choose("auto", "molecule")["id"] == "lam5-v1"
@@ -169,11 +178,16 @@ def test_lam4_molecule_routing_enables_verlet_skin_at_64_atoms_and_8gb_mac_runs(
     assert d_8gb["memory_level"] != "refuse"
     assert d_8gb["low_memory"] is True
 
-    # Linux + CUDA vibrations/phonons routes to CUDA + float64 cleanly
+    # Linux + CUDA vibrations/phonons keeps float32 + precision="fp32_ieee" so Triton Dual-CSR stays active; explicit exact selects float64
     vib_spec = validation.validate({"task": "vibrations", "structure": {"format": "builtin", "text": "water"}})
     d_cuda_vib = routing.route(vib_spec, w1_an, ["cpu", "cuda"], 16.0, {"points": [], "source": "none"}, lam4_m)
     assert d_cuda_vib["device"] == "cuda"
-    assert d_cuda_vib["dtype"] == "float64"
+    assert d_cuda_vib["dtype"] == "float32"
+    assert d_cuda_vib["precision"] == "fp32_ieee"
+    vib_exact_spec = validation.validate({"task": "vibrations", "structure": {"format": "builtin", "text": "water"}, "runtime": {"dtype": "float64"}})
+    d_cuda_vib_exact = routing.route(vib_exact_spec, w1_an, ["cpu", "cuda"], 16.0, {"points": [], "source": "none"}, lam4_m)
+    assert d_cuda_vib_exact["dtype"] == "float64"
+    assert d_cuda_vib_exact["precision"] == "exact"
 
 
 def test_clone_calculator_on_warm_lam4_calculator_with_skin():

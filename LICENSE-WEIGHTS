@@ -1,10 +1,10 @@
-Mena-Lab model weights (mena-lam5-v1.pt, mena-lam-400k.pt)
+Mena-Lab model weights (mena-lam6-v1.pt, mena-lam5-v1.pt, mena-lam-400k.pt)
 Copyright 2026 Francesco Viola
 
 The model weight files are licensed under the Creative Commons Attribution 4.0
 International License (CC BY 4.0). You may use, share and adapt them for any
 purpose, including commercial use, provided you give appropriate credit: name
-the model (for example "Mena-LAM 5 from Mena-Lab") and link to the repository.
+the model (for example "Mena-LAM-6 or Mena-LAM-s from Mena-Lab") and link to the repository.
 
 The source code in this repository is licensed separately under Apache-2.0
 (see LICENSE). The training data and their credits are listed in NOTICE.

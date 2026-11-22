@@ -76,7 +76,7 @@ function follow(job, title, estimate) {
 
 async function run() {
   const job = state.plan && state.plan.spec;
-  if (!job || state.running) return;
+  if (!job || state.running || state.planPending) return;
   clearOutput();
   if (state.atoms) viewer.show(inputFrames(1), { keepRepeat: true });
   try {

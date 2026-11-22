@@ -1,14 +1,20 @@
 // Display names the API does not carry. LOT names mirror mena_app/tasks/common.py LOT_LABELS.
 
 export const LOT = {
-  mp_pbe: 'PBE (Materials Project)', mp_pbeU: 'PBE+U (Materials Project)', omat_pbe: 'PBE (OMat24)', omat_pbeU: 'PBE+U (OMat24)',
-  matpes_pbe: 'PBE (MatPES)', matpes_r2scan: 'r²SCAN (MatPES)', oc20_rpbe: 'RPBE (OC20 catalysis)', oc22_pbeU: 'PBE+U (OC22 oxide catalysis)',
+  mp_pbe: 'PBE (Materials Project, PBE_52)', mp_pbeU: 'PBE+U (Materials Project, PBE_52)',
+  omat_pbe: 'PBE (OMat24, PBE_54)', omat_pbeU: 'PBE+U (OMat24, PBE_54)',
+  matpes_pbe: 'PBE (MatPES, PBE_64)', matpes_r2scan: 'r²SCAN (MatPES, PBE_64)',
+  oc20_rpbe: 'RPBE (OC20 catalysis)', oc22_pbeU: 'PBE+U (OC22 oxide catalysis)',
+  oc25_rpbe: 'RPBE (OC25 catalysis)',
+  mad16_r2scan: 'r²SCAN (MAD-1.6 aims_tight)', mad16_pbe: 'PBE (MAD-1.6 aims_tight)',
   omc25_pbe: 'PBE+D3 (OMC25 molecular crystals)', omol_wb97mv: 'ωB97M-V/def2-TZVPD (OMol25)',
+  opoly26_wb97mv: 'ωB97M-V/def2-TZVPD (OPoly26)',
   openrxn_wb97xd: 'ωB97X-D3/def2-TZVPPD (OpenRxn)', spice_wb97md3: 'ωB97M-D3(BJ)/def2-TZVPPD (SPICE)',
 };
 
 export const DEVICE = { cpu: 'CPU', mps: 'Apple GPU', cuda: 'NVIDIA GPU' };
 export const DTYPE = { float32: 'Single (float32)', float64: 'Double (float64)' };
+export const PRECISION = { auto: 'Automatic', fp32_ieee: 'Strict FP32 (IEEE)', exact: 'Double (FP64 exact)' };
 export const DOMAIN = { molecule: 'Molecule', crystal: 'Crystal', slab: 'Surface slab' };
 export const DOMAIN_PLURAL = { molecule: 'molecules', crystal: 'crystals', slab: 'surfaces' };
 

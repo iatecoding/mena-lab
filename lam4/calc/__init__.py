@@ -1,16 +1,76 @@
-"""lam4.calc: MenaCalculator ASE interface, checkpoint loader, and spectroscopic / interpretability utilities."""
+"""lam4.calc: MenaCalculator ASE interface, checkpoint loader, implicit solvent, and spectroscopy utilities."""
 from lam4.calc.calculator import Lam4Calculator, MenaCalculator
+from lam4.calc.gk_multipole import (
+    compute_fragment_ddg_solv,
+    compute_multipole_gbsa,
+    eval_multipole_gbsa_from_context,
+)
+from lam4.calc.implicit_solvent import (
+    BONDI_RADII,
+    GBSAContext,
+    HCT_SCALE,
+    K_COUL,
+    MBONDI2_BASE,
+    OBC1_PARAMS,
+    OBC2_PARAMS,
+    build_gbsa_context,
+    compute_born_radii,
+    compute_gbsa,
+    compute_sasa,
+    eval_gbsa_from_context,
+    fibonacci_sphere,
+    get_radii,
+)
+from lam4.calc.interpret import (
+    EA2_PER_MV_CM,
+    EA2_PER_VA,
+    MV_CM_PER_EA2,
+    VA_PER_EA2,
+    analyze_binding_multipoles,
+    dipole_to_debye,
+    field_to_mv_cm,
+    field_to_va,
+)
 from lam4.calc.loader import load_lam4_checkpoint, resolve_lam4_config
+from lam4.calc.md_runner import can_use_md_engine, relax_atoms, run_md
 from lam4.calc.physics import E_ANG_TO_DEBYE, IR_KM_MOL_FACTOR, harmonic_ir_raman, polarizability_tensor, resolve_lot_and_u
 
 __all__ = [
+    "BONDI_RADII",
+    "EA2_PER_MV_CM",
+    "EA2_PER_VA",
     "E_ANG_TO_DEBYE",
+    "GBSAContext",
+    "HCT_SCALE",
     "IR_KM_MOL_FACTOR",
+    "K_COUL",
     "Lam4Calculator",
+    "MBONDI2_BASE",
+    "MV_CM_PER_EA2",
     "MenaCalculator",
+    "OBC1_PARAMS",
+    "OBC2_PARAMS",
+    "VA_PER_EA2",
+    "analyze_binding_multipoles",
+    "build_gbsa_context",
+    "can_use_md_engine",
+    "compute_born_radii",
+    "compute_fragment_ddg_solv",
+    "compute_gbsa",
+    "compute_multipole_gbsa",
+    "compute_sasa",
+    "dipole_to_debye",
+    "eval_gbsa_from_context",
+    "eval_multipole_gbsa_from_context",
+    "fibonacci_sphere",
+    "field_to_mv_cm",
+    "field_to_va",
+    "get_radii",
     "harmonic_ir_raman",
     "load_lam4_checkpoint",
     "polarizability_tensor",
+    "relax_atoms",
     "resolve_lam4_config",
     "resolve_lot_and_u",
+    "run_md",
 ]

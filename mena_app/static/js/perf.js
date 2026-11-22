@@ -1,8 +1,8 @@
 // Performance view:
 // 1. TOP: "Run it on this computer" — live 3D visual simulation & on-machine speed/memory benchmark for both Molecules
-//    (Mena-LAM-s / lam5-v1) and Periodic Crystals (Mena-LAM-preview / lam-400k) via bench.js.
+//    (Mena-LAM-s / lam5-v1) and Periodic Crystals (Mena-LAM-6 / lam6-v1) via bench.js.
 // 2. MIDDLE: which model runs molecules and which runs crystals and surfaces.
-// 3. BOTTOM: Published Benchmarks organized into scannable Domain sections (Molecules · Mena-LAM-s & Periodic Materials · Mena-LAM-preview).
+// 3. BOTTOM: Published Benchmarks organized into scannable Domain sections (Molecules · Mena-LAM-s & Periodic Materials).
 import { el, clear, api } from './util.js';
 import { hbars, scatter } from './perfcharts.js';
 import { mountBench, openBenchJob } from './bench.js';
@@ -40,15 +40,15 @@ function archStatusCallout(st) {
       el('span', { class: 'arch-kicker' }, 'Models'),
       el('span', { class: 'muted arch-sub' }, 'Automatic picks the model by structure type; change it in Settings')),
     el('div', { class: 'arch-grid' },
-      card(st.molecules, 'active'),
-      card(st.materials, 'preview')));
+      card(st.molecules, st.molecules.status || 'active'),
+      card(st.materials, st.materials.status || 'active')));
 }
 
 function hardwareCallout(hb) {
   if (!hb) return null;
   return el('div', { class: 'hw-banner', role: 'region', 'aria-label': 'Hardware comparison context' },
     el('div', { class: 'hw-banner-title' },
-      el('span', { class: 'hw-tag mena' }, 'Mena-LAM-preview: 1× A100 / Apple M3 Max laptop'),
+      el('span', { class: 'hw-tag mena' }, 'Mena-LAM-preview (lam-400k): 1× A100 / Apple M3 Max laptop'),
       el('span', { class: 'hw-vs' }, 'vs.'),
       el('span', { class: 'hw-tag other' }, 'Competitors: NVIDIA H100 / H200 / H20 96 GB')),
     el('div', { class: 'hw-banner-grid' },
@@ -119,12 +119,12 @@ function moleculesSection(b) {
 }
 
 function materialsSection(b) {
-  const sec = el('section', { class: 'domain-section', 'aria-label': 'Periodic materials benchmarks (Mena-LAM-preview)' },
+  const sec = el('section', { class: 'domain-section', 'aria-label': 'Periodic materials benchmarks' },
     el('div', { class: 'domain-head' },
       el('div', {},
-        el('h3', { class: 'domain-title' }, 'Crystals & Surfaces — Mena-LAM-preview (lam-400k)'),
-        el('p', { class: 'muted domain-desc' }, 'Matbench Discovery DynaMat v1.0 molecular dynamics, the DPA4 dense-diamond speed test, and Mena-LAM-s speed on large crystals.')),
-      el('span', { class: 'domain-tag preview' }, 'Default for crystals and surfaces')),
+        el('h3', { class: 'domain-title' }, 'Crystals & Surfaces — Mena-LAM-6 (default) & Published Benchmarks'),
+        el('p', { class: 'muted domain-desc' }, 'Crystals and surfaces run on Mena-LAM-6 (lam6-v1: Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182) by default. Below are the published DynaMat v1.0 and DPA4 dense-diamond comparisons for Mena-LAM-preview (lam-400k) and large-crystal scaling for Mena-LAM-s.')),
+      el('span', { class: 'domain-tag active' }, 'Default: Mena-LAM-6 (lam6-v1)')),
     hardwareCallout(b.hardware_banner),
     hero(b.headline));
 
@@ -178,7 +178,7 @@ function materialsSection(b) {
       }));
     const fig4 = el('div');
     box.append(figure('Discovery accuracy (CPS) vs. speed on dense diamond (158 nbr/atom)', 'M3 Max laptop (300 GB/s) vs. H20 (4,000 GB/s)', fig4, {
-      note: 'Mena-LAM-preview (14.5 atoms/ms = 14,480 atoms/s, CPS 0.849) is measured on an Apple M3 Max laptop; all other models ran on an NVIDIA H20 96 GB server GPU (DPA4 Fig. 1c / Table S-17).',
+      note: (di.rows.filter(r => r.mena && r.cps != null).map(r => `${r.name} (${r.atoms_per_ms} atoms/ms = ${r.atoms_per_s.toLocaleString('en-US')} atoms/s, CPS ${r.cps})`).join('; ') || 'Mena') + ' is measured on an Apple M3 Max laptop; all other models ran on an NVIDIA H20 96 GB server GPU (DPA4 Fig. 1c / Table S-17).',
       source: 'Matbench Discovery CPS vs. saturated diamond E+F+S throughput (1 atom/ms = 1,000 atoms/s). Up and to the right is better.',
     }));
     if (dPts.length) scatter(fig4, { points: dPts, x_label: 'saturated throughput (atoms/ms, log scale, higher is better; 10 = 10,000 atoms/s)', y_label: 'Matbench Discovery CPS (higher is better)', x_unit: '' });
@@ -231,7 +231,7 @@ export async function showPerf(openFull) {
       const tabDefs = [
         ['all', 'Both domains'],
         ['molecules', 'Molecules (Mena-LAM-s)'],
-        ['materials', 'Periodic Materials (Mena-LAM-preview)'],
+        ['materials', 'Periodic Materials'],
       ];
       const syncDomain = () => {
         if (molSec) molSec.hidden = activeDomain === 'materials';

@@ -66,9 +66,14 @@ class Printer:
         t = catalog.task(spec["task"])
         where = a["domain"] + (f", {a['spacegroup']}" if a.get("spacegroup") else "")
         print(f"{B}{t['title']}{X}  {a['formula']}  {D}{a['n_atoms']} atoms, {where}{X}")
+        prec = d.get("precision")
+        prec_lbl = f"{d['dtype']} ({prec})" if prec and prec != "auto" else d["dtype"]
+        prec_why = d["reasons"].get("precision") if (prec and prec != "auto" and d["reasons"].get("precision")) else d["reasons"].get("dtype", "")
+        lot_show = catalog.LOT_LABELS.get(d.get("resolved_lot") or d.get("lot", "auto"), d.get("resolved_lot") or d.get("lot", "auto"))
         rows = [("model", f"{m['title']}  {D}{m.get('metrics') or ''}{X}"),
+                ("theory", f"{lot_show}  {D}{d['reasons'].get('lot', '')}{X}"),
                 ("device", f"{d['device'].upper()}  {D}{d['reasons'].get('device', '')}{X}"),
-                ("precision", f"{d['dtype']}  {D}{d['reasons'].get('dtype', '')}{X}"),
+                ("precision", f"{prec_lbl}  {D}{prec_why}{X}"),
                 ("compiled", f"{'on' if d.get('compile') else 'off'}  {D}{d['reasons'].get('compile', '')}{X}"),
                 ("estimate", f"{_dur(d['seconds'])}, {d['peak_gb'] if d['peak_gb'] is not None else '?'} GB peak  {D}({d['calls']:,} evaluations; {d['cost_source']}){X}")]
         if d["reasons"].get("size"):
@@ -120,15 +125,30 @@ class Printer:
             print(f"  {D}{k:<38}{v}{X}")
         for n in r.get("notes", []):
             print(f"  {Y}! {n}{X}")
+        if r.get("interpretation"):
+            self.interpretation(r["interpretation"])
         print(f"\n  results in {workdir}/")
         for f in r.get("files", []):
             print(f"    {f['name']:<24}{D}{f['label']}{X}")
         print(f"    {'result.json':<24}{D}everything above, as data{X}\n    {'job.json':<24}{D}re-run with `mena run job.json`{X}")
 
+    def interpretation(self, panel: dict) -> None:
+        """What the physics heads say, one block per quantity: value, trust level, meaning, caveat."""
+        print(f"\n{B}Interpretation{X}  {D}{panel.get('model', '')} physics heads; full notes in result.json{X}")
+        for it in panel.get("items", []):
+            v = it["value"]
+            v = f"{v:.{it.get('digits') or 2}f}" if isinstance(v, float) else str(v)
+            print(f"  {it['label']:<38}{v} {it.get('unit') or ''}  {D}[{it['trust_label']}]{X}")
+            for line in ([it["detail"]] if it.get("detail") else []) + [it.get("short") or it["caveat"]]:
+                print(f"  {'':<38}{D}{line}{X}")
+        for n in panel.get("notes", []):
+            print(f"  {Y}! {n}{X}")
+
     def models(self, rows: list[dict]) -> None:
         for m in rows:
             ok = (f"{G}installed{X}" if m["available"] else f"{D}downloads on first use{X}" if m.get("downloadable")
-                  else f"{Y}unsupported{X}" if m.get("unsupported") else f"{Y}missing{X}")
+                  else f"{Y}unsupported{X}" if m.get("unsupported")
+                  else f"{D}preview, not published yet{X}" if m.get("release") == "preview" else f"{Y}missing{X}")
             print(f"{B}{m['id']:<14}{X}{m.get('title', '')}  [{ok}]  {D}{', '.join(m.get('domains', []))}{X}")
             if m.get("metrics"):
                 print(f"{'':14}{D}{m['metrics']}{X}")

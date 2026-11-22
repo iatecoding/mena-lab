@@ -116,6 +116,8 @@ def test_benchmark_visual_md_and_data():
     icon = (paths.STATIC_DIR / "icon.svg").read_text(encoding="utf-8")
     html = (paths.STATIC_DIR / "index.html").read_text(encoding="utf-8")
     assert "<svg" in icon and 'href="/static/icon.svg"' in html
+    assert 'M9.6 20.0 L13.8 17.2 L18.2 19.8 L22.6 17.0' in icon
+    assert 'M9.6 20.0 L13.8 17.2 L18.2 19.8 L22.6 17.0' in html
 
 
 

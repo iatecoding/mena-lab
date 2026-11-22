@@ -53,7 +53,8 @@ def announce_compile(ctx: Context, calc) -> None:
     """Say what the first model call is doing when it compiles (5-30 s, once per run), then how it went."""
     def first_call(*args, **kwargs):
         del calc.calculate  # one shot: later calls go straight to the class method
-        ctx.status("compiling the model for this computer: about 15 s the first time, about 5 s on later runs")
+        ctx.status("compiling the model for this computer (one-time warm-up, 5-30 s; later runs reuse it). "
+                   "The result is checked against the uncompiled model.")
         t = time.perf_counter()
         out = calc.calculate(*args, **kwargs)
         dt = time.perf_counter() - t
@@ -99,19 +100,26 @@ def fmax_of(forces) -> float:
     return float(np.linalg.norm(forces, axis=1).max()) if len(forces) else 0.0
 
 
-def make_observer(ctx: Context, atoms, state: dict, target=None, opt=None, steps: int = 1, chart: str = "opt", label: str = "relax"):
+def make_observer(ctx: Context, atoms, state: dict, target=None, opt=None, steps: int = 1, chart: str = "opt", label: str = "relax",
+                  save_every: int | None = None):
+    eff_every = max(1, int(save_every)) if save_every is not None else (1 if steps <= 50 else max(1, steps // 50))
+    state["_save_every"] = eff_every
+    state["_last_saved_step"] = -1
+
     def observe():
         fm = fmax_of((target if target is not None else atoms).get_forces())
         e = atoms.get_potential_energy()
         step = opt.nsteps if opt is not None else len(state["energies"])
         state["energies"].append(e)
         state["fmaxs"].append(fm)
-        state["frames"].append(atoms.copy())
-        if "phys" in state:
-            state["phys"].append(R.snapshot_physics(atoms))
+        if step % eff_every == 0:
+            state["frames"].append(atoms.copy())
+            if "phys" in state:
+                state["phys"].append(R.snapshot_physics(atoms))
+            ctx.frame(atoms, f"{label} step {step}")
+            state["_last_saved_step"] = step
         ctx.series(f"{chart}_energy", "energy", step, e - state["energies"][0])
         ctx.series(f"{chart}_fmax", "largest force", step, fm)
-        ctx.frame(atoms, f"{label} step {step}")
         ctx.progress(min(step, steps), steps, f"{label}: step {step}, largest force {fm:.4f} eV/Å", {"step": step, "largest force": f"{fm:.4f} eV/Å"})
         if ctx.cancelled:
             raise Cancelled()
@@ -119,18 +127,24 @@ def make_observer(ctx: Context, atoms, state: dict, target=None, opt=None, steps
     return observe
 
 
-def optimize(ctx: Context, atoms, method: str, fmax: float, steps: int, cell: bool = False, chart: str = "opt", label: str = "relax"):
+def optimize(ctx: Context, atoms, method: str, fmax: float, steps: int, cell: bool = False, chart: str = "opt", label: str = "relax",
+             save_every: int | None = None):
     """Runs an ASE optimiser with live charts. Returns dict(converged, steps, energies, fmaxs, frames, phys, cancelled, seconds)."""
     target = FrechetCellFilter(atoms) if cell else atoms
     opt = OPTIMIZERS[method](target, logfile=None)
     rec = {"energies": [], "fmaxs": [], "frames": [], "phys": [], "cancelled": False}
     t0 = time.perf_counter()
-    opt.attach(make_observer(ctx, atoms, rec, target=target, opt=opt, steps=steps, chart=chart, label=label), interval=1)
+    opt.attach(make_observer(ctx, atoms, rec, target=target, opt=opt, steps=steps, chart=chart, label=label, save_every=save_every), interval=1)
     converged = False
     try:
         converged = bool(opt.run(fmax=fmax, steps=steps))
     except Cancelled:
         rec["cancelled"] = True
+    if not rec["frames"] or rec.get("_last_saved_step") != opt.nsteps:
+        rec["frames"].append(atoms.copy())
+        if "phys" in rec:
+            rec["phys"].append(R.snapshot_physics(atoms))
+        ctx.frame(atoms, f"{label} step {opt.nsteps}")
     ctx.flush()
     return {**rec, "converged": converged, "steps": opt.nsteps, "seconds": time.perf_counter() - t0}
 

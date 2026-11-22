@@ -12,10 +12,10 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSE-WEIGHTS", "NOTICE"]
 # Required: only what a run cannot do without. The web server is the Python standard library; the page loads nothing from the internet.
 dependencies = [
-  "torch>=2.2",
+  "torch>=2.6",
   "numpy>=1.24",
   "ase>=3.23",
-  "vesin>=0.3",
+  "vesin>=0.5",
 ]
 
 [project.optional-dependencies]
@@ -29,5 +29,5 @@ include = ["mena_app*", "lam*", "lam4*"]
 
 [tool.setuptools.package-data]
 mena_app = ["static/**/*", "examples/*", "data/*.json"]
-lam = ["data/*.yaml", "data/e0_refs/*", "eval/*.yml", "models/params/*.npz"]
+lam = ["data/*.yaml", "data/e0_refs/*", "models/params/*.npz"]
 lam4 = ["physics/data/*.npy"]

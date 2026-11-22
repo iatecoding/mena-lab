@@ -22,8 +22,10 @@ export function mountHeader(info, onTheme, onView) {
   const mem = document.getElementById('mem-pill');
   const showMem = m => {
     const hasAvail = m.available_gb != null && Number.isFinite(m.available_gb);
-    mem.textContent = hasAvail ? `${fmt(m.available_gb, 1)} GB free` : (m.total_gb ? `${fmt(m.total_gb, 1)} GB RAM` : 'Memory n/a');
-    mem.title = hasAvail ? `Free memory: ${fmt(m.available_gb, 1)} of ${fmt(m.total_gb, 1)} GB` : `Total memory: ${fmt(m.total_gb, 1)} GB`;
+    const hasVram = m.vram_gb != null && Number.isFinite(m.vram_gb);
+    const ramTxt = hasAvail ? `${fmt(m.available_gb, 1)} GB free` : (m.total_gb ? `${fmt(m.total_gb, 1)} GB RAM` : 'Memory n/a');
+    mem.textContent = hasVram ? `${fmt(m.vram_gb, 0)} GB VRAM · ${ramTxt}` : ramTxt;
+    mem.title = (hasVram ? `GPU VRAM: ${fmt(m.vram_gb, 1)} GB · ` : '') + (hasAvail ? `Free RAM: ${fmt(m.available_gb, 1)} of ${fmt(m.total_gb, 1)} GB` : `Total RAM: ${fmt(m.total_gb, 1)} GB`);
     mem.classList.toggle('warn', hasAvail && m.available_gb < 4);
   };
   showMem(info.machine);

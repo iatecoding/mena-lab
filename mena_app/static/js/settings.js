@@ -13,7 +13,9 @@ function recommended(dom) {
 }
 
 function status(m) {
-  return m.available ? '' : m.downloadable ? ` (downloads on first use, ${m.size_mb} MB)` : ' (not installed)';
+  if (m.available) return '';
+  if (m.downloadable) return ` (downloads on first use, ${m.size_mb} MB)`;
+  return m.release === 'preview' ? ' (preview, not published yet)' : ' (not installed)';
 }
 
 function render() {
@@ -26,11 +28,11 @@ function render() {
     const sel = el('select', { id, onchange: () => save(dom, sel.value) },
       el('option', { value: 'auto', selected: !cur[dom] || null }, `Automatic${rec ? ': ' + rec.title : ''}`),
       ...choices.map(m => el('option', { value: m.id, selected: cur[dom] === m.id || null, disabled: !(m.available || m.downloadable) || null },
-        m.title + status(m))));
+        m.title + (m.role ? ' · ' + m.role : '') + status(m))));
     body.append(el('div', { class: 'field' }, el('label', { for: id }, label), sel));
   });
   body.append(el('p', { class: 'help' }, 'Used when the model is set to Automatic. Each job can still pick another model under Tune. ',
-    'The command line uses the same choice: ', el('code', {}, 'mena models default crystal lam5-v1'), '.'));
+    'The command line uses the same choice: ', el('code', {}, 'mena models default crystal lam6-v1'), '.'));
 }
 
 async function save(dom, value) {

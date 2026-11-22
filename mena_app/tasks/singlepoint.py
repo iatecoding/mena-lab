@@ -11,6 +11,7 @@ from ase.units import GPa
 
 from mena_app import report as R
 from mena_app import structures
+from mena_app.tasks import interpretation as interp_mod
 from mena_app.tasks.common import LOT_LABELS, backends, fmax_of, lot_used, setup, write_structure
 
 E_ANG_TO_DEBYE = 1.0 / 0.20819434
@@ -32,9 +33,11 @@ def _decomp_artifacts(dec: dict | None):
     for key, title, role in (
         ("electrostatic", "Long-range electrostatics", "Screened Coulomb interaction of equilibrated NQE partial charges"),
         ("polarization", "Electronic polarization", "Self-consistent induced atomic polarization response"),
+        ("cloud_overlap", "Cloud overlap (Pauli/ind.)", "Density-overlap Pauli & anisotropic multipole short-range term"),
+        ("spin_exchange", "Spin exchange", "Direct inter-atomic spin-density exchange coupling"),
         ("dispersion_d3", "London dispersion (DFT-D3)", "Long-range van der Waals attraction"),
         ("repulsion", "Short-range core repulsion", "Nordlund–Lehtola–Hobler ZBL-like nuclear repulsion"),
-        ("interaction", "Residual subtotal (E − E_ref)", "Sum of neural network, electrostatic, polarization, D3 & repulsion terms"),
+        ("interaction", "Residual subtotal (E − E_ref)", "Sum of neural network, physical long/short-range & D3 terms"),
         ("reference_e0", "Composition reference (E_ref)", "Per-element linear baseline at this level of theory"),
     ):
         if key in ("interaction", "reference_e0") or abs(km.get(key, 0.0)) > 1e-6:
@@ -50,6 +53,8 @@ def _decomp_artifacts(dec: dict | None):
         ("Network", km.get("network", 0.0)),
         ("Coulomb", km.get("electrostatic", 0.0)),
         ("Polariz.", km.get("polarization", 0.0)),
+        ("Overlap", km.get("cloud_overlap", 0.0)),
+        ("Exchange", km.get("spin_exchange", 0.0)),
         ("D3", km.get("dispersion_d3", 0.0)),
         ("Repulsion", km.get("repulsion", 0.0)),
     ]
@@ -71,12 +76,14 @@ def run(ctx):
     f = atoms.get_forces()
     e = atoms.get_potential_energy()
     first = time.perf_counter() - t
+    n_rep = 3 if first < 2.0 else (1 if first < 8.0 else 0)
     times = []
-    for _ in range(3):  # timing repeats: cheap, and researchers want the warm number
+    for _ in range(n_rep):  # timing repeats: cheap, and researchers want the warm number
+        ctx.check()
         t = time.perf_counter()
         calc.calculate(atoms, ["energy", "forces"], ["positions"])
         times.append(time.perf_counter() - t)
-    warm = float(np.median(times))
+    warm = float(np.median(times)) if times else first
     fn = np.linalg.norm(f, axis=1)
     lot = lot_used(calc, atoms)
     dec = calc.results.get("energy_decomposition")
@@ -86,8 +93,9 @@ def run(ctx):
         ik, ie = float(dec["kcal_mol"]["interaction"]), float(dec["eV"]["interaction"])
         tiles.append(R.tile("interaction_energy", "Residual energy (E − E_ref)", ik, "kcal/mol", 2,
                             hint=f"{ie:.4f} eV (sum of network, electrostatics, polarization, D3 & repulsion)."))
-    tiles += [R.tile("fmax", "Largest force", fmax_of(f), "eV/Å", 4, hint="Close to zero at a relaxed structure."),
-              R.tile("frms", "Typical force (rms)", float(np.sqrt((f ** 2).sum(1).mean())), "eV/Å", 4)]
+    tiles += [R.tile("fmax", "Largest force", round(fmax_of(f), 6), "eV/Å", 4, status="warn" if fmax_of(f) > 1.0 else None,
+                     hint="Close to zero at a relaxed structure. Above 1 eV/Å: relax first."),
+              R.tile("frms", "Typical force (rms)", round(float(np.sqrt((f ** 2).sum(1).mean())), 6), "eV/Å", 4)]
     raw = {"energy_eV": e, "forces_eV_A": f, "lot": lot}
     if dec is not None:
         raw["energy_decomposition"] = dec
@@ -140,6 +148,11 @@ def run(ctx):
         e_at = calc.results.get("energies")
     has_e_at = e_at is not None and len(e_at) == n
 
+    interp = _interpret(ctx, calc, atoms) if ctx.params.get("interpret", True) else None
+    extra_cols = interp["columns"] if interp else {}
+    if interp:
+        raw["interpretation"] = interp["raw"]
+
     tiles += [R.tile("time_warm_ms", "Time per evaluation", warm * 1000, "ms", 1, better="lower", hint="After warm-up."),
               R.tile("time_first_ms", "First evaluation", first * 1000, "ms", 1, hint="Includes neighbour search and device warm-up.")]
     sym = atoms.get_chemical_symbols()
@@ -150,6 +163,7 @@ def run(ctx):
         + ([round(float(spins[i]), 4)] if has_spins else [])
         + ([round(float(alpha_at[i]), 3)] if has_alpha_at else [])
         + ([round(float(e_at[i]), 5)] if has_e_at else [])
+        + [round(float(v[i]), 4) for v in extra_cols.values()]
         for i in range(min(n, 2000))
     ]
     cols = (["#", "element", "x (Å)", "y (Å)", "z (Å)", "Fx (eV/Å)", "Fy", "Fz", "|F|"]
@@ -157,7 +171,8 @@ def run(ctx):
             + (["Δq_equil (e)"] if dq_equil is not None else [])
             + (["spin (e)"] if has_spins else [])
             + (["α (Å³)"] if has_alpha_at else [])
-            + (["E_atom (eV)"] if has_e_at else []))
+            + (["E_atom (eV)"] if has_e_at else [])
+            + [{"unpaired": "unpaired (index)", "pauli": "Pauli (eV)"}[k] for k in extra_cols])
     if has_q:
         raw["charges_e"] = q
     if dq_equil is not None:
@@ -203,7 +218,39 @@ def run(ctx):
         "facts": {"Level of theory": LOT_LABELS.get(lot, lot or "model default"), "Atoms": n},
         "tables": tables,
         "charts": charts,
-        "viewer": R.viewer([R.frame(atoms, f, a["formula"], dipole=dip_frame, charges=q if has_q else None, spins=spins if has_spins else None, alpha=alpha_at if has_alpha_at else None)], atoms),
-        "files": files, "notes": [] if n <= 2000 else ["The table shows the first 2,000 atoms; the JSON and extXYZ downloads have all of them."],
+        "viewer": R.viewer([R.frame(atoms, f, a["formula"], dipole=dip_frame, charges=q if has_q else None, spins=spins if has_spins else None, alpha=alpha_at if has_alpha_at else None,
+                                   extra=interp["frame"] if interp else None)], atoms),
+        "files": files, "notes": _notes(n, fmax_of(f)),
         "raw": raw,
+        **({"interpretation": interp["panel"]} if interp else {}),
     }
+
+
+def _notes(n: int, fmax: float) -> list[str]:
+    notes = []
+    if fmax > 1.0:
+        notes.append(f"The largest force is {fmax:.1f} eV/Å, so this structure is far from a minimum (a structure built from "
+                     "SMILES is only a rough start). Run Relax structure first if you want equilibrium energies, charges "
+                     "or interpretation.")
+    if n > 2000:
+        notes.append("The table shows the first 2,000 atoms; the JSON and extXYZ downloads have all of them.")
+    return notes
+
+
+def _interpret(ctx, calc, atoms):
+    """The physics-head read-out (one extra model call), or None when the model has none."""
+    if not interp_mod.available(calc):
+        return None
+    if len(atoms) > interp_mod.MAX_ATOMS:
+        return {"panel": interp_mod.skipped(len(atoms)), "columns": {}, "frame": {}, "raw": {}}
+    ctx.check()
+    ctx.status("reading the model's physics heads (charges, unpaired electrons, Pauli repulsion, gap)")
+    t = time.perf_counter()
+    try:
+        data = calc.interpretation(atoms)
+    except Exception as exc:  # noqa: BLE001 - the energy and forces are already computed; never lose them over this
+        ctx.log(f"interpretation failed: {type(exc).__name__}: {exc}")
+        return None
+    out = interp_mod.build(data, atoms, ctx.model.get("title", ctx.model["id"]))
+    ctx.log(f"interpretation read in {1000 * (time.perf_counter() - t):.0f} ms")
+    return out

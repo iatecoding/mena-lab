@@ -28,7 +28,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from lam4.core.consts import storable
-from lam4.core.radial import GaussianBasis, N_RBF, R_CUT
+from lam4.core.radial import GaussianBasis, N_RBF, R_CUT, fp32_guard, norm_device, stop_grad, upcast_fp32
 
 # h = 1/128 A (exact in binary, so x / h is exact in float32). Smallest G whose float32 relative error is < 1e-5 for value AND first
 # derivative over every one of 10 random W draws (worst 5.4e-6; G = 512 reaches 1.1e-5 on some draw). Beyond
@@ -39,7 +39,9 @@ _DEFAULT_P_WIN: dict = {}
 
 
 def _default_p_windows(r_cut: float, dtype: torch.dtype, device: torch.device) -> Tensor:
-    key = (float(r_cut), dtype, device)
+    dev = norm_device(device)
+    dt = torch.float64 if dtype == torch.float64 else torch.float32
+    key = (float(r_cut), dt, dev)
     c = _DEFAULT_P_WIN.get(key)
     if c is None:
         k64 = (DEFAULT_GRID, float(r_cut), N_RBF)
@@ -48,10 +50,15 @@ def _default_p_windows(r_cut: float, dtype: torch.dtype, device: torch.device) -
             w64 = windows(BSplineTables(1, DEFAULT_GRID, r_cut)._p64).detach().contiguous()
             if storable(w64):
                 _P_WIN64[k64] = w64
-        c = w64.to(dtype=dtype).to(device=device)
+        c = w64.to(dtype=dt).to(device=dev)
         if storable(c):
             _DEFAULT_P_WIN[key] = c
     return c
+
+
+def warm_spline_windows(r_cut: float, dtype: torch.dtype, device: torch.device) -> None:
+    if not device.type == "meta":
+        _default_p_windows(r_cut, dtype, device)
 
 
 def _weights(t: Tensor, order: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -83,20 +90,23 @@ def default_bspline_basis(x: Tensor, r_cut: float = R_CUT, order: int = 0) -> Te
 
 def bspline_eval(x: Tensor, coef: Tensor, r_cut: float = R_CUT, order: int = 0) -> Tensor:
     """x [E] -> d^order S / dx^order [E, C]. `coef` is [G+3, C], pre-windowed `windows(coef)` [G, 4, C], or factored `W` [32, C]."""
-    if coef.ndim == 2 and coef.shape[0] == N_RBF:
-        return default_bspline_basis(x, r_cut, order) @ coef
-    wtab = windows(coef)
-    g = wtab.shape[0]
-    h = r_cut / g
-    u = x.clamp(0.0, r_cut) / h
-    idx = u.detach().floor().clamp(0, g - 1).to(torch.long)
-    t = u - idx.to(u.dtype)
-    w = _weights(t, order)
-    win = wtab.index_select(0, idx)
-    out = w[0].unsqueeze(-1) * win[:, 0] + w[1].unsqueeze(-1) * win[:, 1] + w[2].unsqueeze(-1) * win[:, 2] + w[3].unsqueeze(-1) * win[:, 3]
-    if order:
-        out = out / h ** order
-    return out
+    with fp32_guard(x.device, disable_tf32=True):
+        xf = upcast_fp32(x)
+        cf = upcast_fp32(coef)
+        if cf.ndim == 2 and cf.shape[0] == N_RBF:
+            return default_bspline_basis(xf, r_cut, order) @ cf
+        wtab = windows(cf)
+        g = wtab.shape[0]
+        h = r_cut / g
+        u = xf.clamp(0.0, r_cut) / h
+        idx = stop_grad(u).floor().clamp(0, g - 1).to(torch.long)
+        t = u - idx.to(u.dtype)
+        w = _weights(t, order)
+        win = wtab.index_select(0, idx)
+        out = w[0].unsqueeze(-1) * win[:, 0] + w[1].unsqueeze(-1) * win[:, 1] + w[2].unsqueeze(-1) * win[:, 2] + w[3].unsqueeze(-1) * win[:, 3]
+        if order:
+            out = out / h ** order
+        return out
 
 
 class BSplineTables(nn.Module):
@@ -129,25 +139,33 @@ class BSplineTables(nn.Module):
         return torch.linalg.solve(m, rhs)
 
     def solve_matrix(self, dtype: torch.dtype, device: torch.device) -> Tensor:
-        key = (dtype, device)  # float64 kept out of the buffers (MPS cannot hold float64): cast per (dtype, device) on use
+        dev = norm_device(device)
+        dt = torch.float64 if dtype == torch.float64 else torch.float32
+        key = (dt, dev)  # float64 kept out of the buffers (MPS cannot hold float64): cast per (dtype, device) on use
         c = self._cache.get(key)
         if c is None:
-            c = self._p64.to(dtype=dtype).to(device=device)
+            c = self._p64.to(dtype=dt).to(device=dev)
             if storable(c):   # never cache a traced / fake cast (lam4.core.consts)
                 self._cache[key] = c
         return c
 
     def coefficients(self, w: Tensor | None = None) -> Tensor:
         w = self.weight if w is None else w
-        return self.solve_matrix(w.dtype, w.device) @ w
+        with fp32_guard(w.device, disable_tf32=True):
+            wf = upcast_fp32(w)
+            if not wf.requires_grad and wf.device.type != "mps" and wf.dtype != torch.float64:
+                return (self.solve_matrix(torch.float64, wf.device) @ wf.to(torch.float64)).to(wf.dtype)
+            return self.solve_matrix(wf.dtype, wf.device) @ wf
 
     def forward(self) -> Tensor:
         return self.coefficients()
 
     def exact(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """Exact R(x) and R'(x) (no interpolation) for x [E] in the dtype of x; the oracle for the error table."""
-        w = self.weight.to(x.dtype)
-        return self.basis(x) @ w, self.basis.derivative(x) @ w
+        with fp32_guard(x.device, disable_tf32=True):
+            xf = upcast_fp32(x)
+            w = self.weight.to(xf.dtype)
+            return self.basis(xf) @ w, self.basis.derivative(xf) @ w
 
 
 def interpolation_error(grid: int, n_samples: int = 200_000, seed: int = 0, dtype: torch.dtype = torch.float32,

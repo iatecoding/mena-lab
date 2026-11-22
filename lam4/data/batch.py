@@ -37,6 +37,10 @@ class GraphBatch:
     frag_spin: torch.Tensor | None = None    # [F] float, per-fragment spin multiplicity; defaults to self.spin when None
     pbc: bool = False          # one value per batch (sources fix it): periodic cells. Open-boundary physics (ExactCoulomb, whole-graph group
                                # context) is never applied to a periodic batch; group physics on pbc needs finite fragments (frag_id)
+    spme_grid: tuple[int, int, int] | None = None  # optional static FFT grid bucket for traced periodic BatchedSPME
+    xc_id: torch.Tensor | None = None              # [G] long, factorized XC functional id (defaults to token when None)
+    paw_id: torch.Tensor | None = None             # [G] long, factorized PAW/basis id (0 = vasp_pbe52 when None)
+    u_atom: torch.Tensor | None = None             # [N] long, per-atom Hubbard +U bit (0/1)
 
     @property
     def frag_group(self) -> torch.Tensor:

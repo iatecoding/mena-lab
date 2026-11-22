@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 from ase import units
 
-from lam4.calc.physics import harmonic_ir_raman
 from mena_app import report as R
 from mena_app.runtime import Cancelled
 from mena_app.tasks.common import fmax_of, optimize, setup, write_structure
@@ -13,6 +12,11 @@ from mena_app.tasks.common import fmax_of, optimize, setup, write_structure
 EV_TO_CM = 1.0 / units.invcm
 HBAR_EV = units._hbar / units._e  # eV s
 BATCH_DISP_CHUNK = 36
+
+
+def harmonic_ir_raman(*args, **kwargs):
+    from lam4.calc.physics import harmonic_ir_raman as _hir
+    return _hir(*args, **kwargs)
 
 
 def displacements_and_derivatives(ctx, atoms, dx: float) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
@@ -27,7 +31,7 @@ def displacements_and_derivatives(ctx, atoms, dx: float) -> tuple[np.ndarray, np
     got_pol = False
     calc = atoms.calc
 
-    if hasattr(calc, "eval_batch"):
+    if hasattr(calc, "eval_batch") and not getattr(calc, "low_memory", False):
         frames = []
         for k in range(n3):
             i, c = divmod(k, 3)

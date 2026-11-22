@@ -19,7 +19,10 @@ PRE = _p("prerelax", "Relax first", "bool", True, "Vibrations are only meaningfu
 
 TASKS = [
     {"id": "singlepoint", "title": "Energy & forces", "icon": "point", "domains": ["molecule", "crystal", "slab"],
-     "summary": "Energy, physical decomposition, forces, dipole, polarizability and charges of the structure as given.", "params": []},
+     "summary": "Energy, physical decomposition, forces, dipole, polarizability and charges of the structure as given.",
+     "params": [_p("interpret", "Interpretation", "bool", True,
+                   "Also read the model's physics heads: charges, unpaired electrons, Pauli repulsion and the HOMO–LUMO gap, "
+                   "each with how far to trust it. One extra model call; fullest with Mena-LAM-6.", cli_alias="--explain")]},
     {"id": "relax", "title": "Relax structure", "icon": "down", "domains": ["molecule", "crystal", "slab"],
      "summary": "Moves the atoms downhill in energy to the nearest stable structure.",
      "params": [FMAX, MAX_STEPS, OPT,
@@ -71,9 +74,15 @@ RUNTIME = [
     _p("lot", "Level of theory", "choice", "auto", "The DFT method the model reproduces. Auto picks it from the structure."),
     _p("device", "Device", "choice", "auto", "Auto compares the devices for this exact job and takes the fastest."),
     _p("dtype", "Precision", "choice", "auto", "Auto uses double precision for vibrations and phonons, where it costs little.", options=["auto", "float32", "float64"]),
+    _p("precision", "Precision mode", "choice", "auto", "Auto lets the router choose; Strict FP32 (IEEE) disables TF32, and Double (FP64 exact) enforces full double precision.",
+       options=["auto", "fp32_ieee", "exact"]),
     _p("low_memory", "Low-memory mode", "choice", "auto", "Auto turns this on only if the job would not fit in free memory otherwise.", options=["auto", "on", "off"]),
     _p("compile", "Compiled kernels", "choice", "auto", "Faster model calls after a one-time warm-up of 5-30 s. Auto turns this on only when the job is long enough to earn the warm-up back. The first call is checked against the uncompiled model.", options=["auto", "on", "off"]),
-    _p("threads", "CPU threads", "int", None, "Leave empty for the default.", min=1, max=512, nullable=True),
+    _p("skin", "Neighbor skin", "float", None, "Verlet neighbor-list skin buffer in Å (leave empty for automatic: 1.0 Å MD, 0.5 Å relax, 0.0 Å single-point).", "Å", min=0.0, max=3.0, nullable=True, advanced=True),
+    _p("edge_mode", "Edge kernel", "choice", "auto", "Auto uses fused Metal/Triton Dual-CSR kernels on GPU. Choose ref or stream to force pure PyTorch.", options=["auto", "csr", "ref", "stream"], advanced=True),
+    _p("add_dispersion", "D3 dispersion", "choice", "auto", "Auto applies DFT-D3 add-back whenever the level of theory requires it (e.g. ωB97M-V, OMC25).", options=["auto", "on", "off"], advanced=True),
+    _p("u_flag", "Hubbard +U", "choice", "auto", "Auto applies MP2020 +U on transition-metal oxides/fluorides.", options=["auto", "1", "0"], labels={"auto": "Auto (MP2020)", "1": "Force +U on", "0": "Force +U off"}, advanced=True),
+    _p("threads", "CPU threads", "int", None, "Leave empty for the default.", min=1, max=512, nullable=True, advanced=True),
 ]
 
 SYSTEM = [
@@ -83,12 +92,15 @@ SYSTEM = [
 
 
 LOT_LABELS = {
-    "mp_pbe": "PBE (Materials Project)", "mp_pbeU": "PBE+U (Materials Project)",
-    "omat_pbe": "PBE (OMat24)", "omat_pbeU": "PBE+U (OMat24)",
-    "matpes_pbe": "PBE (MatPES)", "matpes_r2scan": "r²SCAN (MatPES)",
+    "mp_pbe": "PBE (Materials Project, PBE_52)", "mp_pbeU": "PBE+U (Materials Project, PBE_52)",
+    "omat_pbe": "PBE (OMat24, PBE_54)", "omat_pbeU": "PBE+U (OMat24, PBE_54)",
+    "matpes_pbe": "PBE (MatPES, PBE_64)", "matpes_r2scan": "r²SCAN (MatPES, PBE_64)",
     "oc20_rpbe": "RPBE (OC20 catalysis)", "oc22_pbeU": "PBE+U (OC22 oxide catalysis)",
+    "oc25_rpbe": "RPBE (OC25 catalysis)",
+    "mad16_r2scan": "r²SCAN (MAD-1.6 aims_tight)", "mad16_pbe": "PBE (MAD-1.6 aims_tight)",
     "omc25_pbe": "PBE+D3 (OMC25 molecular crystals)",
     "omol_wb97mv": "ωB97M-V/def2-TZVPD (OMol25)",
+    "opoly26_wb97mv": "ωB97M-V/def2-TZVPD (OPoly26)",
     "openrxn_wb97xd": "ωB97X-D3/def2-TZVPPD (OpenRxn)",
     "spice_wb97md3": "ωB97M-D3(BJ)/def2-TZVPPD (SPICE)",
 }

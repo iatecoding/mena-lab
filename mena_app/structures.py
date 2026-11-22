@@ -14,11 +14,11 @@ from ase.io import read as ase_read
 from ase.neighborlist import neighbor_list
 from ase.spacegroup import crystal as sg_crystal
 
+from lam4.registry.hubbard import mp_hubbard_u_flag
 from mena_app.paths import EXAMPLES_DIR
 
 FILE_FORMATS = {".xyz": "extxyz", ".extxyz": "extxyz", ".cif": "cif", ".vasp": "vasp", ".poscar": "vasp"}
 CUTOFF_A = 6.0
-MP_HUBBARD_METALS = frozenset({"V", "Cr", "Mn", "Fe", "Co", "Ni", "Mo", "W"})
 
 
 class StructureError(ValueError):
@@ -293,14 +293,18 @@ def count_edges(a: Atoms, cutoff: float = CUTOFF_A) -> int:
         return _count_edges_numpy(points, box, pbc, cutoff)
 
 
-def _spacegroup(a: Atoms) -> str | None:
+def _crystal_symmetry(a: Atoms) -> dict | None:
     from mena_app.crystal_symmetry import find_crystal_symmetry
 
     try:
-        ds = find_crystal_symmetry(a.cell.array, a.get_scaled_positions(wrap=False), a.numbers, symprec=1e-3)
-        return ds["label"] if ds is not None else None
+        return find_crystal_symmetry(a.cell.array, a.get_scaled_positions(wrap=False), a.numbers, symprec=1e-3)
     except Exception:  # noqa: BLE001 - optional nicety
         return None
+
+
+def _spacegroup(a: Atoms) -> str | None:
+    ds = _crystal_symmetry(a)
+    return ds["label"] if ds is not None else None
 
 
 def _int_hint(info: dict, keys: tuple[str, ...]) -> int | None:
@@ -340,11 +344,8 @@ def analyze(a: Atoms) -> dict:
     electrons = int(a.numbers.sum())
     elems = sorted({s for s in a.get_chemical_symbols()})
     elem_set = set(elems)
-    # +U for oxides and fluorides of the Materials Project U metals; a metal with a few adsorbed O atoms (CO on Fe) is not one
-    syms = a.get_chemical_symbols()
-    n_u = sum(s in MP_HUBBARD_METALS for s in syms)
-    n_of = sum(s in ("O", "F") for s in syms)
-    hubbard_u = dom != "molecule" and n_u > 0 and n_of >= 0.5 * n_u
+    # +U for oxidized MP transition-metal oxides/fluorides; metallic catalysts carrying O/F adsorbates remain u=0.
+    hubbard_u = dom != "molecule" and bool(mp_hubbard_u_flag(a.numbers, a.positions, a.cell.array, a.pbc))
     out = {"formula": a.get_chemical_formula("hill" if dom == "molecule" else "metal", empirical=False), "n_atoms": len(a), "domain": dom,
            "elements": elems, "electrons": electrons, "edges": count_edges(a), "hubbard_u": hubbard_u,
            "charge_hint": _charge_hint(a), "spin_hint": _spin_hint(a), "file_lot": a.info.get("file_lot"),
@@ -357,9 +358,11 @@ def analyze(a: Atoms) -> dict:
         out["volume"] = round(vol, 3) if vol is not None else None
         if vol is not None:
             widths = [vol / float(np.linalg.norm(np.cross(a.cell[i - 2], a.cell[i - 1]))) for i in range(3)]
+            ds = _crystal_symmetry(a)
             out.update(widths=[round(w, 3) for w in widths],
-                       density=round(float(a.get_masses().sum()) * 1.66054 / vol, 3), spacegroup=_spacegroup(a),
-                       phonon_evaluations=_phonon_evaluations(a))
+                       density=round(float(a.get_masses().sum()) * 1.66054 / vol, 3),
+                       spacegroup=(ds["label"] if ds is not None else None),
+                       phonon_evaluations=_phonon_evaluations(a, dataset=ds))
         else:
             out.update(widths=None, density=None, spacegroup=None)
     if 1 < len(a) <= 3000:
@@ -379,11 +382,17 @@ def analyze(a: Atoms) -> dict:
     return out
 
 
-def _phonon_evaluations(a: Atoms) -> int:
+_UNSET = object()
+
+
+def _phonon_evaluations(a: Atoms, *, dataset: Any = _UNSET) -> int:
     """Supercell evaluations for phonons: the symmetry-irreducible displacements, or 6N + 1 when only the identity applies."""
     from mena_app import phonon_symmetry
 
-    plan = phonon_symmetry.symmetry_plan(a, 1) if len(a) <= 500 else None
+    if len(a) > 500 or dataset is None:
+        return 6 * len(a) + 1
+    ds = None if dataset is _UNSET else dataset
+    plan = phonon_symmetry.symmetry_plan(a, 1, dataset=ds)
     return plan.n_evaluations if plan is not None else 6 * len(a) + 1
 
 

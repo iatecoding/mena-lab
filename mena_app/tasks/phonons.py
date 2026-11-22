@@ -19,6 +19,32 @@ EV_TO_CM = 1.0 / units.invcm
 trapezoid = getattr(np, "trapezoid", None) or np.trapz  # NumPy < 2 has only trapz
 
 
+def _can_batch_phonons(calc) -> bool:
+    if not hasattr(calc, "eval_batch") or getattr(calc, "low_memory", False):
+        return False
+    dt = getattr(calc, "dtype", None)
+    if dt is None:
+        return True
+    s = str(dt).lower()
+    return "float32" in s or "fp32" in s
+
+
+def _eval_forces_batched(calc, atoms_list: list, ctx, tick_fn, max_atoms: int = 4096, max_batch: int = 16) -> list[np.ndarray]:
+    outs: list[np.ndarray] = []
+    if not atoms_list:
+        return outs
+    n_at = max(1, len(atoms_list[0]))
+    chunk = max(1, min(max_batch, max_atoms // n_at))
+    for i in range(0, len(atoms_list), chunk):
+        ctx.check()
+        sub = atoms_list[i:i + chunk]
+        res = calc.eval_batch(sub, properties=("forces",), max_atoms=max_atoms, max_batch=chunk)
+        for r in res:
+            outs.append(np.asarray(r["forces"], dtype=float).copy())
+            tick_fn()
+    return outs
+
+
 class _LivePhonons(Phonons):
     """Reports progress and honours cancel between displaced supercells. With a symmetry plan only the irreducible
     displacements are evaluated (`measure`), and ASE's loop then reads every displacement from the rebuilt table."""
@@ -26,11 +52,40 @@ class _LivePhonons(Phonons):
     def __init__(self, ctx, total, *a, plan=None, **kw):
         super().__init__(*a, **kw)
         self.ctx, self.total, self.done = ctx, total, 0
-        self.plan, self._table = plan, None
+        self.plan, self._table, self._batch_table = plan, None, None
 
     def _tick(self) -> None:
         self.done += 1
         self.ctx.progress(self.done, self.total, f"displaced supercell {self.done} of {self.total}")
+
+    def prepare_full_batch(self) -> None:
+        if not _can_batch_phonons(self.calc):
+            return
+        atoms_N = self.atoms * self.supercell
+        natoms = len(self.atoms)
+        offset = natoms * self.offset
+        p0 = atoms_N.positions[offset:offset + natoms].copy()
+        names: list[str] = []
+        frames: list = []
+
+        eq_disp = self._eq_disp()
+        if eq_disp.name not in self.cache:
+            names.append(eq_disp.name)
+            frames.append(atoms_N.copy())
+        for a in self.indices:
+            for i in range(3):
+                for sign in (-1, 1):
+                    disp = self._disp(a, i, sign)
+                    if disp.name in self.cache:
+                        continue
+                    sc = atoms_N.copy()
+                    sc.positions[offset + a, i] = p0[a, i] + sign * self.delta
+                    names.append(disp.name)
+                    frames.append(sc)
+        if not frames:
+            return
+        forces_list = _eval_forces_batched(self.calc, frames, self.ctx, self._tick)
+        self._batch_table = dict(zip(names, forces_list))
 
     def measure(self) -> None:
         """Evaluate the irreducible displacements and rebuild the force of every displacement ASE would make."""
@@ -38,9 +93,32 @@ class _LivePhonons(Phonons):
         sc = self.atoms * self.supercell
         sc.calc = self.calc
         self.ctx.check()
+        p0 = sc.positions.copy()
+        if _can_batch_phonons(self.calc):
+            specs: list[tuple[int, int, int]] = []
+            frames = [sc.copy()]
+            for b in plan.reps:
+                for d_idx, d in enumerate(plan.directions[b]):
+                    for sign in (1, -1):
+                        sc_d = sc.copy()
+                        sc_d.positions[plan.offset * n + b] += sign * self.delta * d
+                        specs.append((b, d_idx, sign))
+                        frames.append(sc_d)
+            outs = _eval_forces_batched(self.calc, frames, self.ctx, self._tick)
+            f0 = outs[0]
+            by_b: dict[int, dict[tuple[int, int], np.ndarray]] = {b: {} for b in plan.reps}
+            for (b, d_idx, sign), f_out in zip(specs, outs[1:]):
+                by_b[b][(d_idx, sign)] = f_out
+            rep = {}
+            for b in plan.reps:
+                meas = [(by_b[b][(d_idx, 1)] - by_b[b][(d_idx, -1)]) / (2 * self.delta)
+                        for d_idx in range(len(plan.directions[b]))]
+                rep[b] = phonon_symmetry.rep_response(plan, b, np.array(meas))
+            self._table = (f0, phonon_symmetry.all_responses(plan, rep))
+            return
+
         f0 = sc.get_forces().copy()
         self._tick()
-        p0 = sc.positions.copy()
         rep = {}
         for b in plan.reps:
             meas = []
@@ -63,6 +141,8 @@ class _LivePhonons(Phonons):
             if disp.sign == 0:
                 return {"forces": f0.copy()}
             return {"forces": f0 + disp.sign * self.delta * M[disp.a, :, :, disp.i]}
+        if self._batch_table is not None and disp.name in self._batch_table:
+            return {"forces": self._batch_table[disp.name]}
         self.ctx.check()
         out = super().calculate(atoms_N, disp)
         self._tick()
@@ -73,7 +153,10 @@ def free_energy(e: np.ndarray, w: np.ndarray, T: float, n_modes: int) -> dict:
     """Harmonic vibrational free energy, entropy and heat capacity per cell from a phonon DOS sampled on energies e (eV)."""
     m = e > 1e-5
     e, w = e[m], w[m]
-    w = w / trapezoid(w, e) * n_modes
+    area = float(trapezoid(w, e)) if len(e) > 1 else 0.0
+    if area <= 1e-12:
+        return {"f": 0.0, "s": 0.0, "cv": 0.0, "zpe": 0.0}
+    w = w / area * n_modes
     kT = units.kB * T
     x = e / kT
     f = trapezoid(w * (0.5 * e + kT * np.log1p(-np.exp(-x))), e)
@@ -105,17 +188,29 @@ def run(ctx):
     plan = phonon_symmetry.symmetry_plan(prim, k)
     full = 6 * n + 1
     total = plan.n_evaluations if plan is not None else full
-    ph = _LivePhonons(ctx, total, prim, calc, supercell=(k, k, k), delta=p["displacement"], name=work, plan=plan)
-    if plan is not None and ph.offset != plan.offset:  # the plan assumes ASE's reference cell; never guess
-        plan, total = None, full
-        ph.plan, ph.total = None, full
-    if plan is not None:
-        ctx.status(f"{k}×{k}×{k} supercell, {n * k ** 3} atoms: {total} evaluations instead of {full}, using the crystal's symmetry")
-        ph.measure()
-    else:
-        ctx.status(f"{k}×{k}×{k} supercell, {n * k ** 3} atoms, {total} evaluations")
-    ph.run()
-    ph.read(acoustic=True)
+    orig_skin = getattr(calc, "skin", None)
+    if orig_skin is not None and float(orig_skin) < 0.3:
+        calc.skin = 0.3
+        if hasattr(calc, "_nl_cache"):
+            calc._nl_cache = None
+    try:
+        ph = _LivePhonons(ctx, total, prim, calc, supercell=(k, k, k), delta=p["displacement"], name=work, plan=plan)
+        if plan is not None and ph.offset != plan.offset:  # the plan assumes ASE's reference cell; never guess
+            plan, total = None, full
+            ph.plan, ph.total = None, full
+        if plan is not None:
+            ctx.status(f"{k}×{k}×{k} supercell, {n * k ** 3} atoms: {total} evaluations instead of {full}, using the crystal's symmetry")
+            ph.measure()
+        else:
+            ctx.status(f"{k}×{k}×{k} supercell, {n * k ** 3} atoms, {total} evaluations")
+            ph.prepare_full_batch()
+        ph.run()
+        ph.read(acoustic=True)
+    finally:
+        if orig_skin is not None and float(orig_skin) < 0.3:
+            calc.skin = orig_skin
+            if hasattr(calc, "_nl_cache"):
+                calc._nl_cache = None
     path = prim.cell.bandpath(npoints=220)
     bs = ph.get_band_structure(path, verbose=False)
     bands = bs.energies[0] * EV_TO_THZ  # (nk, 3n)

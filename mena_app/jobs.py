@@ -177,17 +177,22 @@ class JobManager:
         return self.jobs.get(jid)
 
     def list(self) -> list[Job]:
-        return [self.jobs[j] for j in self.order if j in self.jobs]
+        with self.lock:
+            return [self.jobs[j] for j in list(self.order) if j in self.jobs]
 
     def cancel(self, jid: str) -> bool:
-        job = self.jobs.get(jid)
-        if job is None or job.status in TERMINAL:
-            return False
-        job.cancel.set()
-        if job.status == "queued":
-            job.finished = time.time()
-            job.error = "cancelled before it started"
-            job.set_status("cancelled")
+        with self.lock:
+            job = self.jobs.get(jid)
+            if job is None or job.status in TERMINAL:
+                return False
+            job.cancel.set()
+            was_queued = job.status == "queued"
+            if was_queued:
+                job.finished = time.time()
+                job.error = "cancelled before it started"
+                job.set_status("cancelled")
+        if was_queued:
+            self._persist(job, "cancelled")
         return True
 
     def delete(self, jid: str) -> bool:
@@ -220,11 +225,12 @@ class JobManager:
             job = self.q.get()
             if job is None:
                 return
-            if job.status != "queued":
-                continue
-            job.thread = threading.current_thread()
-            job.started = time.time()
-            job.set_status("running")
+            with self.lock:
+                if job.status != "queued":
+                    continue
+                job.thread = threading.current_thread()
+                job.started = time.time()
+                job.set_status("running")
             try:
                 res = self.engine.run(job.spec, job.meta, job.add_event, job.cancel, str(job.workdir))
             except Exception as exc:  # noqa: BLE001
@@ -235,19 +241,19 @@ class JobManager:
             job.error, job.error_kind = res.get("error"), res.get("error_kind")
             job.finished = time.time()
             if job.result:
-                names = {f["name"] for f in job.result.get("files", [])}
                 job.files = [f for f in job.result.get("files", []) if (job.workdir / f["name"]).is_file()]
                 for f in job.files:
                     f["size"] = (job.workdir / f["name"]).stat().st_size
-                del names
             status = res.get("status", "error")
             self._persist(job, status)
             job.set_status(status if status in TERMINAL else "error")
 
     def _persist(self, job: Job, status: str) -> None:
         try:
-            d = job.full()
+            from mena_app import runtime as _rt
+
+            d = _rt.clean(job.full())
             d["status"] = status
-            (job.workdir / "job.json").write_text(json.dumps(d), encoding="utf-8")
+            (job.workdir / "job.json").write_text(json.dumps(d, default=str), encoding="utf-8")
         except (OSError, TypeError, ValueError):
             pass

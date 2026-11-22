@@ -35,7 +35,7 @@ from torch import Tensor
 from lam4.core.consts import storable
 from lam4.core.harmonics import y2, y3
 from lam4.core.layout import HEADS, StageLayout
-from lam4.core.radial import N_RBF, R_CUT, R_ON, c3_envelope, warp_distance
+from lam4.core.radial import N_RBF, R_CUT, R_ON, c3_envelope, fp32_guard, norm_device, upcast_fp32, warp_distance
 from lam4.core.spline_tables import bspline_eval, default_bspline_basis
 from lam4.physics.repulsion import floored_length
 
@@ -45,7 +45,8 @@ _ORIG_BSPLINE_EVAL = bspline_eval
 def edge_basis(x: Tensor, r_cut: float = R_CUT) -> Tensor:
     if bspline_eval is _ORIG_BSPLINE_EVAL:
         return default_bspline_basis(x, r_cut)
-    return bspline_eval(x, torch.eye(N_RBF, dtype=x.dtype, device=x.device), r_cut)
+    dt = torch.float64 if x.dtype == torch.float64 else torch.float32
+    return bspline_eval(upcast_fp32(x), torch.eye(N_RBF, dtype=dt, device=x.device), r_cut)
 
 QK_EPS = 1e-6
 BIAS_BOUND = 2.0  # |radial logit bias| <= 2, so |logit| <= 3: exp needs no running max and the +1 self term cannot dominate
@@ -78,10 +79,12 @@ def _near_base(layout: StageLayout, k_s_far: int, k_v_far: int) -> Tensor:
 
 
 def _near_mask(layout: StageLayout, cfg: EdgeCfg, like: Tensor) -> Tensor:
-    key = (layout.name, layout.filt_seg, cfg.k_s_far, cfg.k_v_far, like.dtype, like.device)
+    dev = norm_device(like.device)
+    dt = torch.float64 if like.dtype == torch.float64 else torch.float32
+    key = (layout.name, layout.filt_seg, cfg.k_s_far, cfg.k_v_far, dt, dev)
     m = _NEAR_MASK.get(key)
     if m is None:
-        m = _near_base(layout, cfg.k_s_far, cfg.k_v_far).to(dtype=like.dtype).to(device=like.device)
+        m = _near_base(layout, cfg.k_s_far, cfg.k_v_far).to(dtype=dt).to(device=dev)
         if storable(m):
             _NEAR_MASK[key] = m
     return m
@@ -89,13 +92,15 @@ def _near_mask(layout: StageLayout, cfg: EdgeCfg, like: Tensor) -> Tensor:
 
 def normalise_qk(q: Tensor, k: Tensor) -> tuple[Tensor, Tensor]:
     """q, k [N, H*Dh] -> unit-norm per head [N, H, Dh] (RMS-normalised then / sqrt(Dh)); <qn, kn> in [-1, 1]. Zero in, zero out."""
-    n, hd = q.shape
-    dh = hd // HEADS
+    with fp32_guard(q.device):
+        qf, kf = upcast_fp32(q), upcast_fp32(k)
+        n, hd = qf.shape
+        dh = hd // HEADS
 
-    def unit(x: Tensor) -> Tensor:
-        x = x.reshape(n, HEADS, dh)
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + QK_EPS) / dh ** 0.5
-    return unit(q), unit(k)
+        def unit(x: Tensor) -> Tensor:
+            x = x.reshape(n, HEADS, dh)
+            return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + QK_EPS) / dh ** 0.5
+        return unit(qf), unit(kf)
 
 
 def head_scale(x: Tensor, w: Tensor, seg: tuple[int, ...]) -> Tensor:
@@ -113,6 +118,13 @@ def _per_channel(ex: Tensor, k: int) -> Tensor:
     return ex.unsqueeze(-1).expand(ex.shape[0], HEADS, k // HEADS).reshape(ex.shape[0], k)
 
 
+def _head_mul(x: Tensor, w: Tensor) -> Tensor:
+    """x [e, k] times the per-channel head weight of w [e, H]: the same products as `x * _per_channel(w, k)` through a
+    broadcast view, without materialising the [e, k] expansion (and its backward reduction) once per channel group."""
+    e, k = x.shape
+    return (x.view(e, HEADS, k // HEADS) * w.unsqueeze(-1)).view(e, k)
+
+
 def _dot3(b: Tensor, u: Tensor) -> Tensor:
     """sum_c b[e, k, c] u[e, c] as 3 multiply-adds (a reduction over the size-3 axis is pathologically slow on MPS)."""
     return b[..., 0] * u[:, 0:1] + b[..., 1] * u[:, 1:2] + b[..., 2] * u[:, 2:3]
@@ -126,11 +138,13 @@ def _dot5(tau: Tensor, y: Tensor) -> Tensor:
 
 def _edge_r_u_x(d: Tensor, rho: Tensor | None, cfg: EdgeCfg, z_recv: Tensor | None = None, z_send: Tensor | None = None
                 ) -> tuple[Tensor, Tensor, Tensor]:
-    r = d.pow(2).sum(-1).sqrt()
-    u = d / r.unsqueeze(-1)
+    df = upcast_fp32(d)
+    rhof = None if rho is None else upcast_fp32(rho)
+    r = df.pow(2).sum(-1).sqrt()
+    u = df / r.unsqueeze(-1)
     if cfg.floor and z_recv is not None:
-        r = floored_length(d, z_recv, z_send, r)
-    return r, u, warp_distance(r, rho, cfg.r_cut)
+        r = floored_length(df, z_recv, z_send, r)
+    return r, u, warp_distance(r, rhof, cfg.r_cut)
 
 
 def edge_geometry(d: Tensor, rho: Tensor | None, cfg: EdgeCfg, z_recv: Tensor | None = None, z_send: Tensor | None = None
@@ -140,21 +154,25 @@ def edge_geometry(d: Tensor, rho: Tensor | None, cfg: EdgeCfg, z_recv: Tensor | 
     DESCRIPTOR FLOOR (earlier Mena geometry.py: `dist = zbl_clamp(dist_raw)`; here the 5 eV NLH tanh floor of lam4.physics.repulsion instead of the earlier Mena trunk's ZBL clamp):
     with cfg.floor and the species of both ends (z_recv, z_send [e] long; None = no floor), chi and the warp read the FLOORED length r~ = |d~|, while
     the direction u stays that of the raw d (the earlier Mena trunk: `unit = diff / dist_raw`). Edges above their floor are untouched (r~ = |d| exactly), pad edges (Z = 0) too."""
-    r, u, x = _edge_r_u_x(d, rho, cfg, z_recv, z_send)
-    return u, x, c3_envelope(r, cfg.r_on, cfg.r_cut)
+    with fp32_guard(d.device):
+        r, u, x = _edge_r_u_x(d, rho, cfg, z_recv, z_send)
+        return u, x, c3_envelope(r, cfg.r_on, cfg.r_cut)
 
 
 def build_edge_geom(pos: Tensor, recv: Tensor, send: Tensor, shift: Tensor, rho: Tensor | None, cfg: EdgeCfg,
                     z: Tensor | None = None) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Precompute stage-invariant per-edge geometry (u, x, chi, y2(u), y3(u)) once across all stages in `ref` mode."""
-    d = pos.index_select(0, send) - pos.index_select(0, recv) + shift
-    rho_e = None if rho is None else rho.index_select(0, recv) + rho.index_select(0, send)
-    zz = (None, None) if z is None else (z.index_select(0, recv), z.index_select(0, send))
-    r, u, x = _edge_r_u_x(d, rho_e, cfg, *zz)
-    chi = c3_envelope(r, cfg.r_on, cfg.r_cut)
-    if cfg.r_cut_near > 0.0:
-        chi = torch.stack((chi, c3_envelope(r, cfg.r_on_near, cfg.r_cut_near)), dim=-1)
-    return u, x, chi, y2(u), y3(u)
+    with fp32_guard(pos.device):
+        posf, shiftf = upcast_fp32(pos), upcast_fp32(shift)
+        rhof = None if rho is None else upcast_fp32(rho)
+        d = posf.index_select(0, send) - posf.index_select(0, recv) + shiftf
+        rho_e = None if rhof is None else rhof.index_select(0, recv) + rhof.index_select(0, send)
+        zz = (None, None) if z is None else (z.index_select(0, recv), z.index_select(0, send))
+        r, u, x = _edge_r_u_x(d, rho_e, cfg, *zz)
+        chi = c3_envelope(r, cfg.r_on, cfg.r_cut)
+        if cfg.r_cut_near > 0.0:
+            chi = torch.stack((chi, c3_envelope(r, cfg.r_on_near, cfg.r_cut_near)), dim=-1)
+        return u, x, chi, y2(u), y3(u)
 
 
 def edge_terms(pos_r: Tensor, pos_s: Tensor, recv: Tensor, send: Tensor, shift: Tensor, coef: Tensor, gates_s: Tensor,
@@ -170,64 +188,79 @@ def edge_terms(pos_r: Tensor, pos_s: Tensor, recv: Tensor, send: Tensor, shift: 
     vec_s [., 32, 3] is required for LATER layouts and ignored for FIRST; ten_s [., 16, 5] is optional for LATER; rho_* are PairWarp.node_rho or None;
     esc [e] or None; z_r, z_s: atomic numbers of the receiver / sender sets (long) for the descriptor floor, or None.
     """
-    chi_near = None
-    if geom is None:
-        d = pos_s.index_select(0, send) - pos_r.index_select(0, recv) + shift
-        rho = None if rho_r is None else rho_r.index_select(0, recv) + rho_s.index_select(0, send)
-        zz = (None, None) if z_r is None else (z_r.index_select(0, recv), z_s.index_select(0, send))
-        r, u, x = _edge_r_u_x(d, rho, cfg, *zz)
-        chi = c3_envelope(r, cfg.r_on, cfg.r_cut)
-        if cfg.r_cut_near > 0.0:
-            chi_near = c3_envelope(r, cfg.r_on_near, cfg.r_cut_near)
-        y2_u, y3_u = y2(u), y3(u)
-    else:
-        u, x, chi, y2_u, y3_u = geom
-        if chi.ndim == 2:
-            chi, chi_near = chi.unbind(-1)
-        elif cfg.r_cut_near > 0.0:
+    with fp32_guard(pos_r.device):
+        pos_r, pos_s, shift = upcast_fp32(pos_r), upcast_fp32(pos_s), upcast_fp32(shift)
+        coef, gates_s, qn_r, kn_s = upcast_fp32(coef), upcast_fp32(gates_s), upcast_fp32(qn_r), upcast_fp32(kn_s)
+        vec_s = None if vec_s is None else upcast_fp32(vec_s)
+        ten_s = None if ten_s is None else upcast_fp32(ten_s)
+        rho_r = None if rho_r is None else upcast_fp32(rho_r)
+        rho_s = None if rho_s is None else upcast_fp32(rho_s)
+        esc = None if esc is None else upcast_fp32(esc)
+        phi = None if phi is None else upcast_fp32(phi)
+        chi_near = None
+        if geom is None:
             d = pos_s.index_select(0, send) - pos_r.index_select(0, recv) + shift
+            rho = None if rho_r is None else rho_r.index_select(0, recv) + rho_s.index_select(0, send)
             zz = (None, None) if z_r is None else (z_r.index_select(0, recv), z_s.index_select(0, send))
-            r, _, _ = _edge_r_u_x(d, None, cfg, *zz)
-            chi_near = c3_envelope(r, cfg.r_on_near, cfg.r_cut_near)
-    tab = (phi @ coef) if (phi is not None and coef.ndim == 2 and coef.shape[0] == N_RBF) else bspline_eval(x, coef, cfg.r_cut)
-    if esc is None:
-        bias = BIAS_BOUND * torch.tanh(tab[:, :HEADS] / BIAS_BOUND)
-        ex = torch.exp((qn_r.index_select(0, recv) * kn_s.index_select(0, send)).sum(-1) + bias)  # [e, H]
-        zc = w = chi.unsqueeze(-1) * ex
-    else:
-        w = chi.unsqueeze(-1) * esc.unsqueeze(-1)
-        zc = chi.unsqueeze(-1).expand(-1, HEADS)
-    filt = tab[:, HEADS:]
-    if chi_near is not None:
-        m = _near_mask(layout, cfg, filt)
-        filt = filt * (1.0 + (chi_near.unsqueeze(-1) - 1.0) * m)
-    f = {n: filt[:, s] for n, s in layout.filt_slices().items()}
-    gs = gates_s.index_select(0, send)
-    g = {n: gs[:, s] for n, s in layout.gate_slices().items()}
-    hw = lambda k: _per_channel(w, k)  # noqa: E731  (head weight times chi)
-    e = u.shape[0]
-    parts = [f["s"] * g["s"] * hw(layout.k_s)]
-    w_dir = f["dir"] * g["v"]
-    w_ten = f["ten"] * g["t"]
-    if layout.later:
-        b = vec_s.index_select(0, send)  # [e, 32, 3]
-        w_lon = f["lon"] * _dot3(b, u)
-        vmsg = ((w_dir + w_lon) * hw(layout.k_v)).unsqueeze(-1) * u.unsqueeze(1) + (f["tr"] * hw(layout.k_v)).unsqueeze(-1) * b
-        if ten_s is not None and ten_s.numel() > 0:
-            tau = ten_s.index_select(0, send)  # [e, 16, 5]
-            w_lon2 = f["lon2"] * _dot5(tau, y2_u)
-            tmsg = ((w_ten + w_lon2) * hw(layout.k_t)).unsqueeze(-1) * y2_u.unsqueeze(1) + (f["tr2"] * hw(layout.k_t)).unsqueeze(-1) * tau
+            r, u, x = _edge_r_u_x(d, rho, cfg, *zz)
+            chi = c3_envelope(r, cfg.r_on, cfg.r_cut)
+            if cfg.r_cut_near > 0.0:
+                chi_near = c3_envelope(r, cfg.r_on_near, cfg.r_cut_near)
+            y2_u, y3_u = y2(u), y3(u)
         else:
-            w_lon2 = w_ten.new_zeros(e, layout.k_lon2)
-            tmsg = (w_ten * hw(layout.k_t)).unsqueeze(-1) * y2_u.unsqueeze(1)
-        parts += [vmsg.reshape(e, -1), w_lon * hw(layout.k_lon), tmsg.reshape(e, -1), w_lon2 * hw(layout.k_lon2)]
-    else:
-        parts.append(((w_dir * hw(layout.k_v)).unsqueeze(-1) * u.unsqueeze(1)).reshape(e, -1))
-        parts.append(((w_ten * hw(layout.k_t)).unsqueeze(-1) * y2_u.unsqueeze(1)).reshape(e, -1))
-    parts.append(((f["o"] * g["o"] * hw(layout.k_o)).unsqueeze(-1) * y3_u.unsqueeze(1)).reshape(e, -1))
-    return torch.cat(parts, dim=-1), zc, chi
+            u, x, chi, y2_u, y3_u = (upcast_fp32(g) for g in geom)
+            if chi.ndim == 2:
+                chi, chi_near = chi.unbind(-1)
+            elif cfg.r_cut_near > 0.0:
+                d = pos_s.index_select(0, send) - pos_r.index_select(0, recv) + shift
+                zz = (None, None) if z_r is None else (z_r.index_select(0, recv), z_s.index_select(0, send))
+                r, _, _ = _edge_r_u_x(d, None, cfg, *zz)
+                chi_near = c3_envelope(r, cfg.r_on_near, cfg.r_cut_near)
+        if phi is not None and coef.ndim == 2 and coef.shape[0] == N_RBF:
+            with fp32_guard(pos_r.device, disable_tf32=True):
+                tab = phi @ coef
+        else:
+            tab = bspline_eval(x, coef, cfg.r_cut)
+        tab_bias, filt = tab.split((HEADS, tab.shape[-1] - HEADS), dim=-1)   # split: one cat in backward, not a zero-filled slice grad each
+        if esc is None:
+            bias = BIAS_BOUND * torch.tanh(tab_bias / BIAS_BOUND)
+            ex = torch.exp((qn_r.index_select(0, recv) * kn_s.index_select(0, send)).sum(-1) + bias)  # [e, H]
+            zc = w = chi.unsqueeze(-1) * ex
+        else:
+            w = chi.unsqueeze(-1) * esc.unsqueeze(-1)
+            zc = chi.unsqueeze(-1).expand(-1, HEADS)
+        if chi_near is not None:
+            m = _near_mask(layout, cfg, filt)
+            filt = filt * (1.0 + (chi_near.unsqueeze(-1) - 1.0) * m)
+        f = dict(zip(layout.filt_names, filt.split(layout.filt_seg, dim=-1)))
+        gs = gates_s.index_select(0, send)
+        g = dict(zip(("s", "v", "t", "o"), gs.split(layout.gate_seg, dim=-1)))
+        hm = lambda x: _head_mul(x, w)  # noqa: E731  (times head weight and chi, per channel)
+        e = u.shape[0]
+        parts = [hm(f["s"] * g["s"])]
+        w_dir = f["dir"] * g["v"]
+        w_ten = f["ten"] * g["t"]
+        if layout.later:
+            b = vec_s.index_select(0, send)  # [e, 32, 3]
+            w_lon = f["lon"] * _dot3(b, u)
+            vmsg = hm(w_dir + w_lon).unsqueeze(-1) * u.unsqueeze(1) + hm(f["tr"]).unsqueeze(-1) * b
+            if ten_s is not None and ten_s.ndim == 3 and ten_s.shape[0] > 0:
+                tau = ten_s.index_select(0, send)  # [e, 16, 5]
+                w_lon2 = f["lon2"] * _dot5(tau, y2_u)
+                tmsg = hm(w_ten + w_lon2).unsqueeze(-1) * y2_u.unsqueeze(1) + hm(f["tr2"]).unsqueeze(-1) * tau
+            else:
+                w_lon2 = w_ten.new_zeros(e, layout.k_lon2)
+                tmsg = hm(w_ten).unsqueeze(-1) * y2_u.unsqueeze(1)
+            parts += [vmsg.reshape(e, -1), hm(w_lon), tmsg.reshape(e, -1), hm(w_lon2)]
+        else:
+            parts.append((hm(w_dir).unsqueeze(-1) * u.unsqueeze(1)).reshape(e, -1))
+            parts.append((hm(w_ten).unsqueeze(-1) * y2_u.unsqueeze(1)).reshape(e, -1))
+        parts.append((hm(f["o"] * g["o"]).unsqueeze(-1) * y3_u.unsqueeze(1)).reshape(e, -1))
+        return torch.cat(parts, dim=-1), zc, chi
 
 
 def finalise(num: Tensor, z: Tensor, dsum: Tensor, layout: StageLayout) -> Tensor:
     """out = num * sqrt(D + 1) / (Z^h + 1) per head: head-weight normalisation (Z) times the degree normaliser 1 / sqrt(D + 1)."""
-    return head_scale(num, torch.sqrt(dsum.unsqueeze(-1) + 1.0) / (z + 1.0), layout.out_seg)
+    with fp32_guard(num.device):
+        numf, zf, dsumf = upcast_fp32(num), upcast_fp32(z), upcast_fp32(dsum)
+        return head_scale(numf, torch.sqrt(dsumf.unsqueeze(-1) + 1.0) / (zf + 1.0), layout.out_seg)

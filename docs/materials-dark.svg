@@ -130,5 +130,5 @@
 <text x="703.5" y="737.5" font-size="12" font-weight="400" fill="#e6edf3" text-anchor="start">18.39</text>
 <text x="0.0" y="768.0" font-size="11" font-weight="400" fill="#9198a1" text-anchor="start">Mena-LAM-preview ran on one NVIDIA A100 (40 GB); the other models on newer H200, H100, RTX PRO 6000 or A800 GPUs.</text>
 <text x="0.0" y="784.0" font-size="11" font-weight="400" fill="#9198a1" text-anchor="start">Other models: Matbench Discovery leaderboard (November 2026). Mena-LAM-preview was run with the official DynaMat v1.0</text>
-<text x="0.0" y="800.0" font-size="11" font-weight="400" fill="#9198a1" text-anchor="start">protocol and is not on the leaderboard yet. On an Apple M3 Max laptop it runs 14,480 atoms/s on dense diamond.</text>
+<text x="0.0" y="800.0" font-size="11" font-weight="400" fill="#9198a1" text-anchor="start">protocol and is not on the leaderboard yet. On an Apple M3 Max laptop it runs 13,927 atoms/s on dense diamond.</text>
 </svg>

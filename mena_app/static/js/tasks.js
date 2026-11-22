@@ -1,5 +1,5 @@
 // 2 · Calculation: compact 2x3 task grid (no truncated subtitles) + concise 2-column parameter grid.
-import { el, clear, store } from './util.js';
+import { el, clear, store, toast } from './util.js';
 import { state, emit, on, task, domain, value, setValue, visible, taskAllowed } from './state.js';
 import { DOMAIN_PLURAL } from './labels.js';
 
@@ -116,6 +116,19 @@ export function mountTasks(sh, fh, dh) {
   if (!task() || task().hidden) state.task = 'singlepoint';
   stripHost.addEventListener('keydown', keys);
   renderStrip(); renderForm();
-  on('structure', ({ slot }) => { if (slot === 1) { renderStrip(); renderForm(); } });
+  on('structure', ({ slot }) => {
+    if (slot !== 1) return;
+    const dom = domain(), cur = task();
+    if (cur && dom && !taskAllowed(cur, dom)) {
+      const swap = cur.id === 'vibrations' ? 'phonons' : cur.id === 'phonons' ? 'vibrations' : 'singlepoint';
+      const next = shownTasks().find(t => t.id === swap && taskAllowed(t, dom)) || shownTasks().find(t => taskAllowed(t, dom));
+      if (next && next.id !== state.task) {
+        state.task = next.id; store('task', next.id);
+        toast(`Switched task to ${SHORT_TITLES[next.id] || next.title} for this ${dom}.`);
+        emit('task');
+      }
+    }
+    renderStrip(); renderForm();
+  });
   on('restore-task', () => { renderStrip(); renderForm(); emit('task'); });
 }

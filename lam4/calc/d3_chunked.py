@@ -1,4 +1,4 @@
-"""Memory-bounded 3-pass half-edge D3(BJ) evaluation for CPU and non-Metal devices."""
+"""Memory-bounded 3-pass half-edge D3(BJ) evaluation for CPU and fallback GPU paths."""
 from __future__ import annotations
 
 import numpy as np
@@ -45,7 +45,8 @@ def eval_d3_bj_open_chunked(
             cn.index_add_(0, ii, damp)
             cn.index_add_(0, jj, damp)
 
-    e_kcal = 0.0
+    acc_dt = torch.float32 if pos_t.device.type == "mps" else torch.float64
+    e_acc = torch.zeros((), dtype=acc_dt, device=pos_t.device)
     forces = pos_t.new_zeros((n, 3)) if compute_forces else None
     de_dcn = pos_t.new_zeros(n) if compute_forces else None
 
@@ -80,7 +81,7 @@ def eval_d3_bj_open_chunked(
             taper = 1.0 - t * t * t * (10.0 + t * (6.0 * t - 15.0))
             ep = -1.0 * (d3.s6 * c6 * e6 + d3.s8 * c8 * e8) * taper * (r_c <= d3.r_cut)
             e_chunk = ep.sum() * HARTREE_TO_KCAL
-            e_kcal += float(e_chunk.detach().cpu().double().item())
+            e_acc = e_acc + e_chunk.detach().to(acc_dt)
             if compute_forces:
                 gr, gcni, gcnj = torch.autograd.grad(e_chunk, (r_c, cni, cnj))
                 f_pair = -(gr / r0).unsqueeze(-1) * diff
@@ -110,6 +111,7 @@ def eval_d3_bj_open_chunked(
                 f_cn = -(gr_cn / r0).unsqueeze(-1) * diff
                 forces.index_add_(0, ii, f_cn)
                 forces.index_add_(0, jj, -f_cn)
-        return e_kcal, forces.detach().cpu().to(torch.float64).numpy()
+        packed = torch.cat([e_acc.view(1), forces.detach().reshape(-1).to(acc_dt)]).cpu().to(torch.float64).numpy()
+        return float(packed[0]), packed[1:].reshape(n, 3)
 
-    return e_kcal, None
+    return float(e_acc.cpu().to(torch.float64).item()), None

@@ -5,11 +5,12 @@ from typing import Any
 
 import torch
 from torch import Tensor
-from torch.autograd.function import once_differentiable
 
 from lam4.core.consts import storable
 from lam4.kernels.csr_plan import MAX_DOFF_R2, CSRPlan
-from lam4.kernels.metal_csr import FLAG_CELL, FLAG_G1, FLAG_VIR, _dummy_f32, _dummy_i64, has_metal_csr
+from lam4.kernels import metal_csr as _metal_csr
+from lam4.kernels.metal_csr import FLAG_CELL, FLAG_G1, FLAG_VIR, _dummy_f32, _dummy_i64
+from lam4.kernels.metal_node_flags import MetalShader
 from lam4.physics.nlh_tables import nlh_tables_f64
 
 _NLH_MSL = r"""
@@ -127,15 +128,16 @@ kernel void csr_nlh_bwd(
 }
 """
 
-_NLH_LIB: Any = None
+_NLH_SHADER = MetalShader("metal_nlh", _NLH_MSL)
 _NLH_TABS: dict[tuple[str, int | None], tuple[Tensor, Tensor]] = {}
 
 
+def has_metal_nlh() -> bool:
+    return bool(_metal_csr.has_metal_csr() and _NLH_SHADER.available())
+
+
 def _nlh_lib() -> Any:
-    global _NLH_LIB
-    if _NLH_LIB is None:
-        _NLH_LIB = torch.mps.compile_shader(_NLH_MSL)
-    return _NLH_LIB
+    return _NLH_SHADER.lib()
 
 
 def _nlh_cb_jet_f32(dev: torch.device) -> tuple[Tensor, Tensor]:
@@ -151,69 +153,118 @@ def _nlh_cb_jet_f32(dev: torch.device) -> tuple[Tensor, Tensor]:
     return t
 
 
-class _MetalNLHAgg(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, plan: CSRPlan, edge_shift: Tensor, graph: Tensor, z: Tensor, pos: Tensor, cell: Tensor) -> Tensor:
-        dev = pos.device
-        n = plan.n_atoms
-        if n == 0 or plan.n_edges == 0:
-            ctx.empty = True
-            ctx.save_for_backward(pos, cell)
-            return torch.zeros(n, dtype=torch.float32, device=dev)
-        ctx.empty = False
-        ctx.plan = plan
-        ctx.save_for_backward(edge_shift, graph, z, pos, cell)
-        cb, jet = _nlh_cb_jet_f32(dev)
-        flags = FLAG_CELL | (FLAG_G1 if cell.shape[0] == 1 else 0)
-        out = torch.empty(n, dtype=torch.float32, device=dev)
-        tg = 128
-        tot = ((n + tg - 1) // tg) * tg
-        _nlh_lib().csr_nlh_fwd(
-            pos, plan.recv_ptr, plan.send_idx, edge_shift, cell,
-            graph if graph.numel() else _dummy_i64(dev), z, cb, jet, out,
-            int(n), int(flags), float(MAX_DOFF_R2), threads=(tot, 1, 1), group_size=(tg, 1, 1),
-        )
-        return out
+@torch.library.custom_op("lam4::metal_nlh", mutates_args=())
+def _metal_nlh_op(
+    recv_ptr: Tensor, send_idx: Tensor, send_ptr: Tensor, send_perm: Tensor, recv_idx: Tensor,
+    edge_shift: Tensor, cell: Tensor, graph: Tensor, z: Tensor, pos: Tensor,
+) -> Tensor:
+    dev = pos.device
+    n = int(pos.shape[0])
+    if n == 0 or int(send_idx.shape[0]) == 0:
+        return torch.zeros(n, dtype=torch.float32, device=dev)
+    has_cell = bool(cell.ndim == 3 and cell.numel() > 0)
+    is_g1 = bool(has_cell and cell.shape[0] == 1)
+    cb, jet = _nlh_cb_jet_f32(dev)
+    flags = (FLAG_CELL if has_cell else 0) | (FLAG_G1 if is_g1 else 0)
+    out = torch.empty(n, dtype=torch.float32, device=dev)
+    tg = 128
+    tot = ((n + tg - 1) // tg) * tg
+    _nlh_lib().csr_nlh_fwd(
+        pos, recv_ptr, send_idx,
+        edge_shift if edge_shift.numel() > 0 else _dummy_f32(dev),
+        cell if has_cell else _dummy_f32(dev),
+        graph if (has_cell and not is_g1 and graph.numel() > 0) else _dummy_i64(dev),
+        z, cb, jet, out, int(n), int(flags), float(MAX_DOFF_R2),
+        threads=(tot, 1, 1), group_size=(tg, 1, 1),
+    )
+    return out
 
-    @staticmethod
-    @once_differentiable
-    def backward(ctx, g_out: Tensor):
-        if ctx.empty:
-            pos, cell = ctx.saved_tensors
-            return (
-                None, None, None, None,
-                torch.zeros_like(pos) if ctx.needs_input_grad[4] else None,
-                torch.zeros_like(cell) if ctx.needs_input_grad[5] else None,
-            )
-        edge_shift, graph, z, pos, cell = ctx.saved_tensors
-        plan = ctx.plan
-        dev, n = pos.device, plan.n_atoms
-        need_vir = bool(ctx.needs_input_grad[5])
-        cb, jet = _nlh_cb_jet_f32(dev)
-        flags = FLAG_CELL | (FLAG_G1 if cell.shape[0] == 1 else 0) | (FLAG_VIR if need_vir else 0)
-        d_pos = torch.empty_like(pos)
-        vir_atom = torch.empty((n, 9), dtype=torch.float32, device=dev) if need_vir else _dummy_f32(dev)
-        tg = 128
-        tot = ((n + tg - 1) // tg) * tg
-        _nlh_lib().csr_nlh_bwd(
-            pos, plan.recv_ptr, plan.send_idx, plan.send_ptr, plan.send_perm, plan.recv_idx,
-            edge_shift, cell, graph if graph.numel() else _dummy_i64(dev), z, cb, jet,
-            g_out.contiguous(), d_pos, vir_atom, int(n), int(flags), float(MAX_DOFF_R2),
-            threads=(tot, 1, 1), group_size=(tg, 1, 1),
+
+@_metal_nlh_op.register_fake
+def _(
+    recv_ptr: Tensor, send_idx: Tensor, send_ptr: Tensor, send_perm: Tensor, recv_idx: Tensor,
+    edge_shift: Tensor, cell: Tensor, graph: Tensor, z: Tensor, pos: Tensor,
+) -> Tensor:
+    return torch.empty((pos.shape[0],), dtype=torch.float32, device=pos.device)
+
+
+@torch.library.custom_op("lam4::metal_nlh_bwd", mutates_args=())
+def _metal_nlh_bwd_op(
+    recv_ptr: Tensor, send_idx: Tensor, send_ptr: Tensor, send_perm: Tensor, recv_idx: Tensor,
+    edge_shift: Tensor, cell: Tensor, graph: Tensor, z: Tensor, pos: Tensor, g_out: Tensor, need_vir: bool,
+) -> tuple[Tensor, Tensor]:
+    dev = pos.device
+    n = int(pos.shape[0])
+    has_cell = bool(cell.ndim == 3 and cell.numel() > 0)
+    eff_vir = bool(need_vir and has_cell)
+    if n == 0 or int(send_idx.shape[0]) == 0:
+        return (
+            torch.zeros(pos.shape, dtype=torch.float32, device=dev),
+            torch.zeros(cell.shape, dtype=torch.float32, device=dev) if eff_vir else torch.empty(0, dtype=torch.float32, device=dev),
         )
-        d_cell = None
-        if need_vir:
-            if cell.shape[0] == 1:
-                d_cell = vir_atom.sum(dim=0).view(1, 3, 3)
-            else:
-                d_cell = cell.new_zeros(cell.shape[0], 9).index_add(0, graph, vir_atom).view_as(cell)
-        return None, None, None, None, d_pos if ctx.needs_input_grad[4] else None, d_cell
+    is_g1 = bool(has_cell and cell.shape[0] == 1)
+    cb, jet = _nlh_cb_jet_f32(dev)
+    flags = (FLAG_CELL if has_cell else 0) | (FLAG_G1 if is_g1 else 0) | (FLAG_VIR if eff_vir else 0)
+    d_pos = torch.empty(pos.shape, dtype=torch.float32, device=dev)
+    vir_atom = torch.empty((n, 9), dtype=torch.float32, device=dev) if eff_vir else _dummy_f32(dev)
+    tg = 128
+    tot = ((n + tg - 1) // tg) * tg
+    _nlh_lib().csr_nlh_bwd(
+        pos, recv_ptr, send_idx, send_ptr, send_perm, recv_idx,
+        edge_shift if edge_shift.numel() > 0 else _dummy_f32(dev),
+        cell if has_cell else _dummy_f32(dev),
+        graph if (has_cell and not is_g1 and graph.numel() > 0) else _dummy_i64(dev),
+        z, cb, jet, g_out, d_pos, vir_atom, int(n), int(flags), float(MAX_DOFF_R2),
+        threads=(tot, 1, 1), group_size=(tg, 1, 1),
+    )
+    if not eff_vir:
+        d_cell = torch.empty(0, dtype=torch.float32, device=dev)
+    elif is_g1:
+        d_cell = vir_atom.sum(dim=0).view(1, 3, 3)
+    else:
+        d_cell = torch.zeros((cell.shape[0], 9), dtype=torch.float32, device=dev).index_add(0, graph, vir_atom).view_as(cell)
+    return d_pos, d_cell
+
+
+@_metal_nlh_bwd_op.register_fake
+def _(
+    recv_ptr: Tensor, send_idx: Tensor, send_ptr: Tensor, send_perm: Tensor, recv_idx: Tensor,
+    edge_shift: Tensor, cell: Tensor, graph: Tensor, z: Tensor, pos: Tensor, g_out: Tensor, need_vir: bool,
+) -> tuple[Tensor, Tensor]:
+    eff_vir = bool(need_vir and cell.ndim == 3 and cell.numel() > 0)
+    d_cell = torch.empty(cell.shape, dtype=torch.float32, device=pos.device) if eff_vir else torch.empty(0, dtype=torch.float32, device=pos.device)
+    return torch.empty(pos.shape, dtype=torch.float32, device=pos.device), d_cell
+
+
+def _setup_nlh_ctx(ctx: Any, inputs: tuple[Any, ...], output: Tensor) -> None:
+    recv_ptr, send_idx, send_ptr, send_perm, recv_idx, edge_shift, cell, graph, z, pos = inputs
+    ctx.has_cell = bool(cell.ndim == 3 and cell.numel() > 0)
+    ctx.save_for_backward(recv_ptr, send_idx, send_ptr, send_perm, recv_idx, edge_shift, cell, graph, z, pos)
+
+
+def _autograd_nlh_bwd(ctx: Any, g_out: Tensor):
+    recv_ptr, send_idx, send_ptr, send_perm, recv_idx, edge_shift, cell, graph, z, pos = ctx.saved_tensors
+    needs = ctx.needs_input_grad
+    need_vir = bool(needs[6] and ctx.has_cell)
+    d_pos, d_cell = _metal_nlh_bwd_op(
+        recv_ptr, send_idx, send_ptr, send_perm, recv_idx, edge_shift, cell, graph, z, pos, g_out.contiguous(), need_vir
+    )
+    return None, None, None, None, None, None, d_cell if need_vir else None, None, None, d_pos if needs[9] else None
+
+
+def _nlh_bwd2_unsupported(*_args: Any, **_kw: Any):
+    raise NotImplementedError("lam4::metal_nlh_bwd supports 1st-order backward only; route create_graph=True to PyTorch.")
+
+
+_metal_nlh_op.register_autograd(_autograd_nlh_bwd, setup_context=_setup_nlh_ctx)
+_metal_nlh_bwd_op.register_autograd(_nlh_bwd2_unsupported, setup_context=lambda ctx, inputs, output: None)
 
 
 def metal_nlh_atom_energy(plan: CSRPlan, pos: Tensor, edge_shift: Tensor, cell: Tensor, graph: Tensor, z: Tensor) -> Tensor:
-    if not has_metal_csr():
-        raise RuntimeError("Metal CSR is unavailable")
-    g_c = graph.to(torch.int64).contiguous() if cell.shape[0] > 1 else pos.new_zeros(0, dtype=torch.int64)
-    return _MetalNLHAgg.apply(
-        plan, edge_shift.to(torch.float32).contiguous(), g_c, z.to(torch.int64).contiguous(), pos.contiguous(), cell.contiguous()
+    if not has_metal_nlh():
+        raise RuntimeError("Metal NLH shader is unavailable")
+    g_c = graph.to(torch.int64).contiguous() if graph.numel() > 0 else pos.new_zeros(0, dtype=torch.int64)
+    return _metal_nlh_op(
+        plan.recv_ptr, plan.send_idx, plan.send_ptr, plan.send_perm, plan.recv_idx,
+        edge_shift.to(torch.float32).contiguous(), cell.contiguous(), g_c, z.to(torch.int64).contiguous(), pos.contiguous(),
     )

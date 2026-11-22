@@ -27,9 +27,10 @@ ALIASES = {"sp": "singlepoint", "vib": "vibrations"}
 
 def _add_param(ap, p: dict) -> None:
     flag = "--" + p["name"].replace("_", "-")
+    flags = [flag] + ([p["cli_alias"]] if p.get("cli_alias") else [])
     h = (p.get("help") or p["label"]) + (f" [{p['unit']}]" if p.get("unit") else "") + (f" (default {p['default']})" if p["default"] is not None else "")
     if p["type"] == "bool":
-        ap.add_argument(flag, dest=p["name"], action=argparse.BooleanOptionalAction, default=None, help=h)
+        ap.add_argument(*flags, dest=p["name"], action=argparse.BooleanOptionalAction, default=None, help=h)
     elif p["type"] == "choice" and "options" in p:
         ap.add_argument(flag, dest=p["name"], choices=p["options"], default=None, help=h)
     else:
@@ -78,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     mdf.add_argument("domain", nargs="?", choices=["molecule", "crystal", "slab"])
     mdf.add_argument("model", nargs="?", help="model id, or auto for the recommended one")
     c = sub.add_parser("calibrate", help="measure speed and memory on this computer (about two minutes)")
-    c.add_argument("--model", default=None, help="model id (default: one per backend)")
+    c.add_argument("--model", default=None, help="model id (default: top installed model per domain and backend)")
     sub.add_parser("doctor", help="check the installation")
     return ap
 

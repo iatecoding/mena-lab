@@ -91,6 +91,11 @@ def _hybridizations(
         if hyb[i] == "sp3" and numbers[i] == 7 and len(adj[i]) == 3 and charges[i] == 0:
             if any(hyb[j] == "sp2" for j in adj[i]):
                 hyb[i] = "sp2"
+        # three-coordinate carbon with only single bonds: a radical or a cation, both planar (allyl, benzyl, methyl);
+        # a carbanion is planar only when it can conjugate. Left sp3, a radical CH2 next to a pi system came out twisted
+        # by 90 degrees: the rotational transition state, with the unpaired electron cut off from the pi system.
+        elif hyb[i] == "sp3" and numbers[i] == 6 and len(adj[i]) == 3 and (charges[i] >= 0 or any(hyb[j] == "sp2" for j in adj[i])):
+            hyb[i] = "sp2"
     return hyb
 
 

@@ -105,8 +105,9 @@ FAST_OPS = ("l2", "mix", "proj", "split", "gather", "edge", "radial")  # MenaACE
 
 
 def _mix(x: Tensor, lin: nn.Linear) -> Tensor:
-    """Channel mixing of an equivariant feature [..., C, M] (M = 3 or 5 components) with a bias-free Linear."""
-    return lin(x.transpose(-1, -2)).transpose(-1, -2)
+    """Channel mixing of an equivariant feature [..., C, M] (M = 3 or 5 components) with a bias-free Linear.
+    The input is made contiguous: a linear on the strided transposed view runs as N tiny matmuls (20-80x slower on MPS / CPU)."""
+    return lin(x.transpose(-1, -2).contiguous()).transpose(-1, -2)
 
 
 def _pair_inv(x: Tensor, u: nn.Linear | None, v: nn.Linear | None) -> Tensor:
@@ -381,7 +382,7 @@ class L4Branch(nn.Module):
 
     def _features_from_T4(self, T4: Tensor, T: Tensor) -> Tensor:
         nu2_4 = (_mix(T4, self.u4) * _mix(T4, self.v4)).sum(-1)
-        yt = F.linear(T.transpose(-1, -2), torch.cat([self.a4.weight, self.b4.weight], 0)).transpose(-1, -2)  # [..., 2*k4, 5]
+        yt = F.linear(T.transpose(-1, -2).contiguous(), torch.cat([self.a4.weight, self.b4.weight], 0)).transpose(-1, -2)  # [..., 2*k4, 5]
         m9 = yt @ _const("l2_e9", T)  # [..., 2*k4, 9]
         ma, mb = m9[..., :self.k4, :], m9[..., self.k4:, :]
         mm81 = (ma.unsqueeze(-1) * mb.unsqueeze(-2)).flatten(-2)  # [..., k4, 81]
@@ -561,8 +562,8 @@ class AngularBranch(nn.Module):
             wv = ([self.vttv_p.weight, self.vttv_q.weight] if self.kr else []) + ([self.p3.weight] if self.k3 else [])
             wt_cat = torch.cat(wt, 0)
             wv_cat = torch.cat(wv, 0) if wv else None
-        yt = F.linear(T.transpose(-1, -2), wt_cat).transpose(-1, -2)  # [..., kt + 2 kr + k3, 5]
-        yv = F.linear(v.transpose(-1, -2), wv_cat).transpose(-1, -2) if wv_cat is not None else None  # [..., 2 kr + k3, 3]
+        yt = F.linear(T.transpose(-1, -2).contiguous(), wt_cat).transpose(-1, -2)  # [..., kt + 2 kr + k3, 5]
+        yv = F.linear(v.transpose(-1, -2).contiguous(), wv_cat).transpose(-1, -2) if wv_cat is not None else None  # [..., 2 kr + k3, 3]
         feats, o = [], 0
         if self.kt:
             feats.append(3.0 * l2_det(l2_mat6(yt[..., :self.kt, :])))  # tr(M^3)
@@ -766,10 +767,10 @@ class ACEStage(nn.Module):
         else:
             uvpq_w = torch.cat([self.u1.weight, self.v1.weight, self.p3.weight, self.q3.weight], 0)
             uvt_w = torch.cat([self.u2.weight, self.v2.weight, self.t3.weight], 0)
-        yv = F.linear(v_new.transpose(-1, -2), uvpq_w)  # [...,3,2K+2K2]
+        yv = F.linear(v_new.transpose(-1, -2).contiguous(), uvpq_w)  # [...,3,2K+2K2]
         uv, vv, pv, qv = yv.split([K, K, K2, K2], dim=-1)
         nu2_v = (uv * vv).sum(-2)
-        yt = F.linear(T.transpose(-1, -2), uvt_w)  # [...,5,3K2]
+        yt = F.linear(T.transpose(-1, -2).contiguous(), uvt_w)  # [...,5,3K2]
         ut, vt, tt = yt.split([K2, K2, K2], dim=-1)
         nu2_t = (ut * vt).sum(-2)
         l2 = l2_pair_mm if "l2" in self.fast else l2_pair

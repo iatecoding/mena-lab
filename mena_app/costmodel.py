@@ -16,16 +16,33 @@ from mena_app import paths
 
 LOW_MEMORY_FACTOR = 0.55     # measured: 3.23 / 6.48 GB at 10k atoms
 FLOAT64_MEMORY_FACTOR = 2.0
-# torch.compile of the model stages: one-time cost per process and warm-call speed-up over eager (both with a skin).
-# MPS and CPU measured on an M3 Max (first process ~15 s, later ~5 s: kernels
-# are cached on disk; we plan for the first). CUDA is NOT measured here: a conservative guess.
-COMPILE = {"mps": {"warmup_s": 15.0, "speedup": 2.5}, "cpu": {"warmup_s": 60.0, "speedup": 1.4},
+# torch.compile of the model: one-time cost per process and warm-call speed-up over eager (both with a skin).
+# Measured on an M3 Max. Compiled kernels persist in ~/.mena/compile_cache, so the
+# warm-up is ~5-6 s on MPS and ~15-50 s on CPU once a model has compiled on this computer (the very first compile:
+# 25-40 s MPS, 40-120 s CPU); we plan for a middle value. lam4 backend (lam5, lam6), warm-call speed-ups:
+# MPS 1.9-2.6x (64-atom molecules 2.6x, 1k-atom crystals 2.0x); CPU 1.5-2.8x since the whole-model CPU compile
+# (2026-11-21; FP64 too). lam (lam-400k): MPS 2.5x, CPU 1.4x (2026-11-12). CUDA is NOT measured here: a conservative guess.
+COMPILE = {"mps": {"warmup_s": 10.0, "speedup": 2.5, "by_backend": {"lam4": 2.0}},
+           "cpu": {"warmup_s": 45.0, "speedup": 1.4, "by_backend": {"lam4": 1.8}},
            "cuda": {"warmup_s": 30.0, "speedup": 1.5}}
 
 
-def compiled_seconds(eager_seconds: float, device: str) -> float:
-    c = COMPILE.get(device)
-    return eager_seconds if c is None else c["warmup_s"] + eager_seconds / c["speedup"]
+def _device_family(device: str) -> str:
+    dev = str(device)
+    return dev.split(":", 1)[0] if ":" in dev else dev
+
+
+def compile_speedup(device: str, backend: str | None = None) -> float | None:
+    c = COMPILE.get(_device_family(device))
+    if c is None:
+        return None
+    return float(c.get("by_backend", {}).get(backend, c["speedup"]))
+
+
+def compiled_seconds(eager_seconds: float, device: str, backend: str | None = None) -> float:
+    dev = _device_family(device)
+    c = COMPILE.get(dev)
+    return eager_seconds if c is None else c["warmup_s"] + eager_seconds / compile_speedup(dev, backend)
 
 
 def _consistent_edges(pts: list[dict]) -> bool:
@@ -96,9 +113,10 @@ def _interp(pts: list[tuple[float, float]], x: float) -> float:
 
 def curve(cal: dict, domain: str, device: str, edges: int, backend: str = "lam") -> dict | None:
     dom = "crystal" if domain == "slab" else domain
-    rows = [p for p in cal["points"] if p["domain"] == dom and p["device"] == device and p.get("backend", "lam") == backend]
+    dev = _device_family(device)
+    rows = [p for p in cal["points"] if p["domain"] == dom and _device_family(p["device"]) == dev and p.get("backend", "lam") == backend]
     if not rows and backend == "lam4":
-        rows = [p for p in cal["points"] if p["domain"] == dom and p["device"] == device and p.get("backend", "lam") == "lam"]
+        rows = [p for p in cal["points"] if p["domain"] == dom and _device_family(p["device"]) == dev and p.get("backend", "lam") == "lam"]
     if not rows:
         return None
     return {k: _interp([(p["x"], p[k]) for p in rows], edges) for k in ("cold_ms", "warm_ms", "peak_gb")}

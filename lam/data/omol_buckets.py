@@ -30,7 +30,7 @@ class OmolFlat:
         self.offsets = np.load(self.path / "offsets.npy")
         self.energy, self.charge, self.spin = ld("energy"), ld("charge"), ld("spin")
         self.domain = np.asarray(ld("domain"))
-        self.manifest = json.loads((self.path / "manifest.json").read_text())
+        self.manifest = json.loads((self.path / "manifest.json").read_text(encoding="utf-8"))
         self.domains = self.manifest["domains"]
         self.n_atoms = np.diff(self.offsets)
         opt = lambda k: ld(k) if (self.path / f"{k}.npy").exists() else None  # noqa: E731

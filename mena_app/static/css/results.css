@@ -91,3 +91,19 @@
 .vinspect { position: absolute; left: .75rem; top: 1.85rem; max-width: calc(100% - 1.5rem); background: var(--surface); border: 1px solid var(--border-strong);
   border-radius: 999px; padding: .16rem .6rem; font-family: var(--mono); font-size: .75rem; color: var(--text); font-variant-numeric: tabular-nums;
   box-shadow: 0 1px 4px rgba(0,0,0,.1); pointer-events: none; z-index: 3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Interpretation panel (physics heads): value + trust badge + meaning + caveat */
+.interp-body { padding: .35rem .2rem .2rem; }
+.interp-item { border-top: 1px solid var(--border); padding: .5rem 0 .45rem; }
+.interp-item:first-of-type { border-top: 0; }
+.interp-head { display: flex; align-items: baseline; gap: .55rem; flex-wrap: wrap; }
+.interp-label { font-weight: 600; font-size: .86rem; }
+.interp-val { font-family: var(--mono); font-weight: 600; }
+.interp-head .btn { margin-left: auto; }
+.interp-detail { font-size: .76rem; color: var(--muted); margin-top: .1rem; font-family: var(--mono); }
+.interp-meaning, .interp-caveat { margin: .2rem 0 0; font-size: .8rem; line-height: 1.4; }
+.interp-caveat { color: var(--muted); }
+.trust { font-size: .68rem; padding: .02rem .42rem; border-radius: 2px; border: 1px solid var(--border); white-space: nowrap; }
+.trust.trend { background: var(--good-soft); color: var(--good); border-color: transparent; }
+.trust.qualitative { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+.trust.care { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-border); }

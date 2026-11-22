@@ -77,13 +77,19 @@ def plan(spec: dict) -> dict:
     try:
         model = models.choose(spec["runtime"]["model"], a["domain"])
         m = machine.snapshot()
-        decision = routing.route(spec, a, m["devices"], m["available_gb"], costmodel.load(), model)
+        decision = routing.route(
+            spec, a, m["devices"], m["available_gb"], costmodel.load(), model,
+            device_free_gb=m.get("device_free_gb"),
+        )
         decision["reasons"]["model"] = model.get("choice_reason", "")
     except routing.RoutingError as exc:
         raise PlanError(str(exc) + _lot_hint(spec, a, model)) from None
     except models.ModelError as exc:
         raise PlanError(str(exc)) from None
     if decision["memory_level"] == "refuse":
-        raise PlanError(f"This job needs about {decision['peak_gb']:.1f} GB but only {m['available_gb']:.1f} GB is free. Use a smaller system or close other programs.")
+        free_avail = decision.get("free_gb") if decision.get("free_gb") is not None else m.get("available_gb")
+        free_str = f"{free_avail:.1f} GB" if free_avail is not None else "unknown free memory"
+        mem_kind = "VRAM" if str(decision.get("device", "")).startswith("cuda") else "RAM"
+        raise PlanError(f"This job needs about {decision['peak_gb']:.1f} GB but only {free_str} ({mem_kind}) is free. Use a smaller system or close other programs.")
     public = {k: model.get(k) for k in ("id", "title", "training", "metrics", "backend")}
     return {"analysis": a, "model": model, "model_public": public, "decision": decision, "machine": m}

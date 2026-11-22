@@ -25,6 +25,9 @@ API (all pure functions of tensors; `Repulsion` is a parameter-free module aroun
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -35,24 +38,63 @@ from lam4.physics.nlh_tables import FLOOR_WIDTH, nlh_tables_f64
 
 R_EPS = 1e-4  # sqrt(|d|^2 + R_EPS^2): the earlier Mena trunk's 1e-8 under the root
 _CACHE: dict[tuple[str, int | None, torch.dtype], tuple[Tensor, Tensor, Tensor]] = {}
-_MAX_DOFF_R2: float | None = None
+_CPU_TABS: dict[torch.dtype, tuple[Tensor, Tensor, Tensor]] = {}
+_MAX_DOFF_R2: float = 0.0
+_TRACED_RMIN: ContextVar[Tensor | None] = ContextVar("_TRACED_RMIN", default=None)
 
 
-def _max_doff_r2() -> float:
+@contextmanager
+def with_rmin_table(rmin: Tensor | None):
+    tok = _TRACED_RMIN.set(rmin)
+    try:
+        yield
+    finally:
+        _TRACED_RMIN.reset(tok)
+
+
+def warm_tables() -> None:
     global _MAX_DOFF_R2
-    if _MAX_DOFF_R2 is None:
-        _MAX_DOFF_R2 = float((nlh_tables_f64()[2][:, 0].max() + 1e-3) ** 2)
-    return _MAX_DOFF_R2
+    if torch.float64 not in _CPU_TABS:
+        raw = nlh_tables_f64()
+        _MAX_DOFF_R2 = float((raw[2][:, 0].max() + 1e-3) ** 2)
+        f64 = tuple(torch.from_numpy(a) for a in raw)
+        _CPU_TABS[torch.float64] = f64
+        _CPU_TABS[torch.float32] = tuple(b.to(dtype=torch.float32).contiguous() for b in f64)
+
+
+def _cpu_tabs(dtype: torch.dtype) -> tuple[Tensor, Tensor, Tensor]:
+    t = _CPU_TABS.get(dtype)
+    if t is None:
+        warm_tables()
+        t = _CPU_TABS.get(dtype)
+        if t is None:
+            t = tuple(b.to(dtype=dtype).contiguous() for b in _CPU_TABS[torch.float64])
+            if all(storable(x) for x in t):
+                _CPU_TABS[dtype] = t
+    return t
 
 
 def _tables(device: torch.device, dtype: torch.dtype) -> tuple[Tensor, Tensor, Tensor]:
-    key = (device.type, device.index, dtype)
+    idx = device.index
+    if idx is None and device.type in ("cuda", "mps"):
+        idx = int(torch.cuda.current_device()) if (device.type == "cuda" and torch.cuda.is_available()) else 0
+    key = (device.type, idx, dtype)
     t = _CACHE.get(key)
     if t is None:
-        t = tuple(torch.from_numpy(a).to(device=device, dtype=dtype) for a in nlh_tables_f64())
+        cpu_t = _cpu_tabs(dtype)
+        t = cpu_t if device.type == "cpu" else tuple(b.to(device=device) for b in cpu_t)
         if all(storable(x) for x in t):   # never cache a traced / fake cast (lam4.core.consts)
             _CACHE[key] = t
     return t
+
+
+def warm_device_tables(device: torch.device | str, dtype: torch.dtype = torch.float32) -> None:
+    dev = torch.device(device)
+    if dev.type == "meta" or tracing():
+        return
+    _tables(dev, torch.float64 if dtype == torch.float64 else torch.float32)
+    if dtype != torch.float32:
+        _tables(dev, torch.float32)
 
 
 def _pair_index(z_recv: Tensor, z_send: Tensor) -> Tensor:
@@ -64,7 +106,8 @@ def edge_distance(d: Tensor, eps: float = R_EPS) -> Tensor:
 
 
 def _floor(r: Tensor, z_recv: Tensor, z_send: Tensor, width: float) -> tuple[Tensor, Tensor]:
-    _, rmin, _ = _tables(r.device, r.dtype)
+    tr_rmin = _TRACED_RMIN.get()
+    rmin = tr_rmin if (tr_rmin is not None and tr_rmin.numel() > 0) else _tables(r.device, r.dtype)[1]
     r_min = rmin.index_select(0, _pair_index(z_recv, z_send))
     d_off = r_min + width
     active = (r < d_off) & (r_min > 0.0)
@@ -121,16 +164,34 @@ def _cand_shift(b: GraphBatch, cand: Tensor) -> Tensor:
     return torch.bmm(es.unsqueeze(1), b.cell.index_select(0, g)).squeeze(1)
 
 
+def _raw_proxy_tracing() -> bool:
+    """True inside standalone `make_fx` outside `torch.compile` (where custom ops should decompose to PyTorch)."""
+    if torch.compiler.is_compiling():
+        return False
+    try:
+        from torch.fx.experimental.proxy_tensor import get_proxy_mode
+    except ImportError:
+        return False
+    return get_proxy_mode() is not None
+
+
 def nlh_atom_energy(
     b: GraphBatch, pos: Tensor | None = None, chunk_edges: int = 65_536, *, csr_plan=None, create_graph: bool = False
 ) -> Tensor:
     """[N] kcal/mol: the edge energies summed on the receiver atom. Pad atoms get exactly 0."""
     j, i = b.edge_index
     p = b.pos if pos is None else pos
-    if csr_plan is not None and p.device.type == "mps" and p.dtype == torch.float32 and not create_graph and not tracing():
-        from lam4.kernels.metal_nlh import metal_nlh_atom_energy
+    if csr_plan is not None and p.dtype == torch.float32 and not create_graph:
+        if p.device.type == "mps" and not _raw_proxy_tracing():
+            from lam4.kernels.metal_nlh import has_metal_nlh, metal_nlh_atom_energy
 
-        return metal_nlh_atom_energy(csr_plan, p, b.edge_shift, b.cell, b.graph, b.z)
+            if has_metal_nlh():
+                return metal_nlh_atom_energy(csr_plan, p, b.edge_shift, b.cell, b.graph, b.z)
+        if p.device.type == "cuda" and not _raw_proxy_tracing():
+            from lam4.kernels.triton_nlh import has_triton_nlh, triton_nlh_atom_energy
+
+            if has_triton_nlh(p.device):
+                return triton_nlh_atom_energy(csr_plan, p, b.edge_shift, b.cell, b.graph, b.z)
     n_e = j.shape[0]
     if n_e == 0:
         out = p.new_zeros(b.n_atoms)
@@ -141,7 +202,8 @@ def nlh_atom_energy(
                 out = out + b.cell[:1, :1, :1].sum() * 0.0
         return out
     if not tracing() and (p.device.type == "cpu" or n_e >= 8192):
-        r2_cut = _max_doff_r2()
+        warm_tables()
+        r2_cut = _MAX_DOFF_R2
         cands = []
         with torch.no_grad():
             pd, cd = p.detach(), b.cell.detach()
@@ -199,3 +261,6 @@ class Repulsion(nn.Module):
     def floor(self, d: Tensor, z_recv: Tensor, z_send: Tensor) -> Tensor:
         """Edge vectors with the 5 eV descriptor floor applied (identity for mode "none")."""
         return d if self.mode == "none" else floor_vectors(d, z_recv, z_send)
+
+
+warm_tables()

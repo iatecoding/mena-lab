@@ -36,10 +36,52 @@ def _system(domain: str, size: int):
     return bulk("Si", cubic=True).repeat((size, size, size))
 
 
+def _is_cuda(device: str) -> bool:
+    return str(device).startswith("cuda")
+
+
+def _sync_for(device: str):
+    import torch
+
+    dev = str(device)
+    if dev.startswith("mps") and hasattr(torch, "mps"):
+        return torch.mps.synchronize
+    if _is_cuda(dev) and torch.cuda.is_available():
+        def _sync():
+            with torch.cuda.device(dev):
+                torch.cuda.synchronize(dev)
+        return _sync
+    return lambda: None
+
+
+def _reset_peak_cuda(device: str) -> None:
+    import torch
+
+    dev = str(device)
+    if _is_cuda(dev) and torch.cuda.is_available():
+        with torch.cuda.device(dev):
+            torch.cuda.reset_peak_memory_stats(dev)
+
+
+def _mem_stats(device: str) -> dict:
+    import torch
+
+    dev = str(device)
+    rss = system.process_rss_bytes() / 1e9
+    if _is_cuda(dev) and torch.cuda.is_available():
+        with torch.cuda.device(dev):
+            gpu_alloc = torch.cuda.max_memory_allocated(dev) / 1e9
+            gpu_res = torch.cuda.max_memory_reserved(dev) / 1e9
+        return {"peak_gb": gpu_res, "rss_gb": rss, "gpu_allocated_gb": gpu_alloc, "gpu_reserved_gb": gpu_res}
+    if dev.startswith("mps") and hasattr(torch, "mps"):
+        gpu = torch.mps.driver_allocated_memory() / 1e9
+        return {"peak_gb": rss + gpu, "rss_gb": rss, "gpu_allocated_gb": gpu, "gpu_reserved_gb": gpu}
+    return {"peak_gb": rss, "rss_gb": rss, "gpu_allocated_gb": 0.0, "gpu_reserved_gb": 0.0}
+
+
 def point(req: dict) -> dict:
     """One measurement (runs in a child process)."""
     import numpy as np
-    import torch
 
     from mena_app import backends, structures
 
@@ -52,7 +94,8 @@ def point(req: dict) -> dict:
         a.info.update(charge=0, spin=1)
     rng = np.random.default_rng(0)
     p0 = a.positions.copy()
-    sync = (torch.mps.synchronize if req["device"] == "mps" else (torch.cuda.synchronize if req["device"] == "cuda" else (lambda: None)))
+    sync = _sync_for(req["device"])
+    _reset_peak_cuda(req["device"])
     t = time.perf_counter()
     a.get_forces()
     sync()
@@ -64,31 +107,54 @@ def point(req: dict) -> dict:
         a.get_forces()
         sync()
         ts.append(time.perf_counter() - t)
-    rss = system.process_rss_bytes() / 1e9
-    gpu = (
-        torch.mps.driver_allocated_memory() / 1e9
-        if req["device"] == "mps" and hasattr(torch, "mps")
-        else (torch.cuda.max_memory_reserved() / 1e9 if req["device"] == "cuda" and torch.cuda.is_available() else 0.0)
-    )
-    return {"backend": req["model"].get("backend", "lam"), "domain": req["domain"], "device": req["device"], "n": len(a),
-            "x": edges, "cold_ms": cold * 1e3, "warm_ms": float(np.median(ts)) * 1e3, "peak_gb": rss + gpu}
+    mem = _mem_stats(req["device"])
+    cal_dev = "cuda" if _is_cuda(req["device"]) else req["device"]
+    return {"backend": req["model"].get("backend", "lam"), "domain": req["domain"], "device": cal_dev, "n": len(a),
+            "x": edges, "cold_ms": cold * 1e3, "warm_ms": float(np.median(ts)) * 1e3, **mem}
+
+
+def _select_calibration_targets(model_id: str | None = None) -> list[tuple[dict, list[str]]]:
+    """Select (model_entry, domains) targets so shared backends calibrate the best model per domain."""
+    avail = [m for m in models.all_models() if m.get("available")]
+    if model_id is not None:
+        m = next((x for x in avail if x["id"] == model_id), None)
+        if m is None:
+            return []
+        doms = [d for d in m.get("domains", []) if d != "slab"]
+        return [(m, doms)] if doms else []
+
+    by_model: dict[str, tuple[dict, list[str]]] = {}
+    for dom in ("crystal", "molecule"):
+        by_backend: dict[str, list[dict]] = {}
+        for m in avail:
+            if dom in m.get("domains", []):
+                by_backend.setdefault(m.get("backend", "lam"), []).append(m)
+        for cands in by_backend.values():
+            best = sorted(cands, key=lambda x: x.get("rank", {}).get(dom, 99))[0]
+            by_model.setdefault(best["id"], (best, []))[1].append(dom)
+    return list(by_model.values())
 
 
 def main(model_id: str | None = None) -> int:
-    devs = machine.probe()["devices"]
-    chosen = {}
-    for m in models.all_models():
-        if m["available"] and (model_id is None or m["id"] == model_id):
-            chosen.setdefault(m.get("backend", "lam"), m)
-    if not chosen:
+    raw_devs = machine.probe()["devices"]
+    devs = []
+    seen_cuda = False
+    for dev in raw_devs:
+        if _is_cuda(dev):
+            if not seen_cuda:
+                devs.append(dev)
+                seen_cuda = True
+        else:
+            devs.append(dev)
+    targets = _select_calibration_targets(model_id)
+    if not targets:
         print("no installed model to calibrate (see `mena models`)")
         return 1
     pts, t0 = [], time.time()
-    for backend, m in chosen.items():
+    for m, doms in targets:
+        backend = m.get("backend", "lam")
         for dev in devs:
-            for domain in m["domains"]:
-                if domain == "slab":
-                    continue
+            for domain in doms:
                 sizes = MOLECULE_WATERS if domain == "molecule" else CRYSTAL_REPEATS
                 for size in sizes:
                     req = {"model": m, "device": dev, "domain": domain, "size": size}
@@ -106,30 +172,20 @@ def main(model_id: str | None = None) -> int:
     return 0
 
 
-
-
 def bench_point(req: dict) -> dict:
     """One benchmark size (child process): structure example repeated, MD-like force calls with a neighbour skin."""
     import numpy as np
-    import torch
 
     from mena_app import backends, structures
 
     a = structures.tile_system(structures.load(req["structure"]), tuple(req["repeat"]))
-    d = {"device": req["device"], "dtype": "float32", "lot": "auto", "skin": 0.6, "low_memory": req["low_memory"]}
+    d = {"device": req["device"], "dtype": "float32", "lot": "auto", "skin": 0.6, "low_memory": req["low_memory"],
+         "compile": bool(req.get("compile", False)) and not bool(req["low_memory"])}
     a.calc = backends.build(req["model"], d)
-    sync = torch.mps.synchronize if req["device"] == "mps" and hasattr(torch, "mps") else (torch.cuda.synchronize if req["device"] == "cuda" and torch.cuda.is_available() else (lambda: None))
-
-    def used_gb() -> float:
-        rss = system.process_rss_bytes() / 1e9
-        gpu = (
-            torch.mps.driver_allocated_memory() / 1e9
-            if req["device"] == "mps" and hasattr(torch, "mps")
-            else (torch.cuda.max_memory_reserved() / 1e9 if req["device"] == "cuda" and torch.cuda.is_available() else 0.0)
-        )
-        return rss + gpu
-
-    base = used_gb()  # PyTorch, the device runtime and the model, before any structure is evaluated
+    sync = _sync_for(req["device"])
+    base_mem = _mem_stats(req["device"])
+    base = base_mem["peak_gb"]  # PyTorch, the device runtime and the model, before any structure is evaluated
+    _reset_peak_cuda(req["device"])
     rng = np.random.default_rng(0)
     p0 = a.positions.copy()
     t = time.perf_counter()
@@ -143,10 +199,12 @@ def bench_point(req: dict) -> dict:
         a.get_forces()
         sync()
         ts.append(time.perf_counter() - t)
-    peak = used_gb()
+    mem = _mem_stats(req["device"])
+    peak = mem["peak_gb"]
     ms = float(np.median(ts)) * 1e3
     return {"n": len(a), "edges": structures.count_edges(a), "cold_ms": cold * 1e3, "ms": ms, "atoms_per_ms": len(a) / ms,
-            "peak_gb": peak, "base_gb": base, "added_gb": max(peak - base, 0.0)}
+            "peak_gb": peak, "base_gb": base, "added_gb": max(peak - base, 0.0),
+            "rss_gb": mem["rss_gb"], "gpu_allocated_gb": mem["gpu_allocated_gb"], "gpu_reserved_gb": mem["gpu_reserved_gb"]}
 
 
 if __name__ == "__main__":

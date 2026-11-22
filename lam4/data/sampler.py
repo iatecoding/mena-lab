@@ -41,15 +41,38 @@ class PackedStream:
 
     domain = "molecule"
 
-    def __init__(self, src: OmolSource, plans: dict[int, BucketPlan], n_pad: int, seed: int = 0, chunk: int = 0, device="cpu", r_cut: float = 6.0) -> None:
+    def __init__(self, src: OmolSource, plans: dict[int, BucketPlan], n_pad: int, seed: int = 0, chunk: int = 0, device="cpu", r_cut: float = 6.0,
+                 pair_frac: float = 0.0) -> None:
         self.src, self.plans, self.n_pad, self.chunk, self.device, self.r_cut = src, plans, n_pad, int(chunk), device, r_cut
+        self.pair_frac = float(pair_frac)
         self.rng = np.random.default_rng(seed)
+        self._pair_rng = np.random.default_rng(seed + 99991)
         self.epoch = 0
         self.skipped = 0   # structures dropped for having more edges than the bucket's e_pad alone
         self.perm: dict[int, np.ndarray] = {}
         self.pid: dict[int, np.ndarray] = {}
         self.ptr: dict[int, int] = {}
+        self._rem: dict[int, int] = {}
+        self._pairs: dict[int, np.ndarray] = {}
+        self.pair_stats: dict = {}
+        self._pair_perm: dict[int, np.ndarray] = {}
+        self._pair_ptr: dict[int, int] = {}
+        if self.pair_frac > 0.0:
+            self._pairs, self.pair_stats = self.src.pair_index()
+            for c, arr in self._pairs.items():
+                if len(arr) > 0:
+                    self._pair_perm[c] = self._pair_rng.permutation(len(arr))
+                    self._pair_ptr[c] = 0
         self._new_epoch()
+
+    def _recompute_rem(self) -> None:
+        self._rem = {c: int(self.src.n_at[self.perm[c][self.ptr[c]:]].sum()) for c in self.plans if c in self.perm}
+
+    def _advance(self, cap: int, count: int) -> None:
+        p0 = self.ptr[cap]
+        p1 = p0 + count
+        self._rem[cap] -= int(self.src.n_at[self.perm[cap][p0:p1]].sum())
+        self.ptr[cap] = p1
 
     def _new_epoch(self) -> None:
         self.epoch += 1
@@ -64,9 +87,46 @@ class PackedStream:
             else:
                 self.perm[cap] = self.rng.permutation(rows)
             self.ptr[cap] = 0
+        self._recompute_rem()
 
     def remaining_atoms(self) -> dict[int, float]:
-        return {c: float(self.src.n_at[self.perm[c][self.ptr[c]:]].sum()) for c in self.plans}
+        return {c: float(self._rem.get(c, 0)) for c in self.plans}
+
+    def _draw_pair_cands(self, cap: int, max_k: int) -> tuple[np.ndarray, np.ndarray]:
+        pairs_cap = self._pairs.get(cap)
+        if self.pair_frac <= 0.0 or pairs_cap is None or len(pairs_cap) == 0 or max_k < 2:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+        cap_n = self.n_pad - 2
+        target_n = min(cap_n, int(round(self.pair_frac * cap_n)))
+        if target_n <= 0:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+        pos_l: list[int] = []
+        pid_l: list[int] = []
+        n_est, tok = 0, 0
+        perm = self._pair_perm[cap]
+        ptr = self._pair_ptr[cap]
+        tries, max_tries = 0, min(len(pairs_cap), max(32, max_k))
+        while n_est < target_n and (len(pos_l) + 2) <= max_k and tries < max_tries:
+            if ptr >= len(perm):
+                perm = self._pair_rng.permutation(len(pairs_cap))
+                self._pair_perm[cap] = perm
+                ptr = 0
+            pa, pb = int(pairs_cap[perm[ptr], 0]), int(pairs_cap[perm[ptr], 1])
+            ptr += 1
+            tries += 1
+            na, nb = int(self.src.n_at[pa]), int(self.src.n_at[pb])
+            if na != nb or na <= 0 or (na + nb) > cap_n:
+                continue
+            if n_est + na + nb > target_n and pos_l:
+                break
+            if n_est + na + nb > cap_n:
+                continue
+            tok += 1
+            pos_l.extend((pa, pb))
+            pid_l.extend((tok, tok))
+            n_est += na + nb
+        self._pair_ptr[cap] = ptr
+        return np.asarray(pos_l, dtype=np.int64), np.asarray(pid_l, dtype=np.int64)
 
     def next(self) -> Packed:
         rem = self.remaining_atoms()
@@ -78,20 +138,41 @@ class PackedStream:
         caps = list(rem)
         cap = int(self.rng.choice(caps, p=np.array([rem[c] for c in caps]) / tot))
         pl, p0 = self.plans[cap], self.ptr[cap]
-        pieces = self.pid[cap][p0:p0 + pl.k] if self.chunk > 0 else None
+        pair_pos, pair_ids_p = self._draw_pair_cands(cap, pl.k)
+        n_pair_c = len(pair_pos)
+        if n_pair_c > 0:
+            rem_k = max(0, pl.k - n_pair_c)
+            sing_pos = self.perm[cap][p0:p0 + rem_k]
+            cand_pos = np.concatenate([pair_pos, sing_pos]) if len(sing_pos) else pair_pos
+            cand_pids = np.concatenate([pair_ids_p, np.zeros(len(sing_pos), dtype=np.int64)])
+            if self.chunk > 0:
+                sing_pieces = self.pid[cap][p0:p0 + rem_k]
+                # Unique negative chunk ids for pair slots so lam_rel stays strictly on singletons.
+                pieces = np.concatenate([-(np.arange(1, n_pair_c + 1, dtype=np.int64)), sing_pieces])
+            else:
+                pieces = None
+        else:
+            cand_pos = self.perm[cap][p0:p0 + pl.k]
+            cand_pids = None
+            pieces = self.pid[cap][p0:p0 + pl.k] if self.chunk > 0 else None
         try:
-            pk = pack_molecules(self.src, cap, self.perm[cap][p0:p0 + pl.k], n_pad=self.n_pad, e_pad=pl.e_pad, k=pl.k, r_cut=self.r_cut, device=self.device, pieces=pieces)
+            pk = pack_molecules(self.src, cap, cand_pos, n_pad=self.n_pad, e_pad=pl.e_pad, k=pl.k, r_cut=self.r_cut,
+                                device=self.device, pieces=pieces, source=getattr(self.src, "source", None), pair_ids=cand_pids)
         except OversizeStructures as e:   # nothing in the prefix fits e_pad on its own: skip it and draw again
             self.skipped += e.n
-            self.ptr[cap] = p0 + e.n
+            self._advance(cap, max(0, e.n - n_pair_c))
             return self.next()
         self.skipped += pk.skipped
-        self.ptr[cap] = p0 + pk.used + pk.skipped
+        self._advance(cap, max(0, pk.used + pk.skipped - n_pair_c))
         return pk
 
     def state(self) -> dict:
-        return {"epoch": self.epoch, "rng": self.rng.bit_generator.state, "ptr": dict(self.ptr), "perm": {c: p.copy() for c, p in self.perm.items()},
-                "pid": {c: p.copy() for c, p in self.pid.items()}}
+        st = {"epoch": self.epoch, "rng": self.rng.bit_generator.state, "ptr": dict(self.ptr), "perm": {c: p.copy() for c, p in self.perm.items()},
+              "pid": {c: p.copy() for c, p in self.pid.items()}}
+        if self.pair_frac > 0.0 and self._pair_ptr:
+            st["pair_rng"] = self._pair_rng.bit_generator.state
+            st["pair_ptr"] = dict(self._pair_ptr)
+        return st
 
     def load(self, st: dict) -> None:
         self.epoch, self.ptr = st["epoch"], dict(st["ptr"])
@@ -101,6 +182,13 @@ class PackedStream:
                 self.perm[c] = np.asarray(st["perm"][c])
                 if self.chunk > 0:
                     self.pid[c] = np.asarray(st["pid"][c])
+        if self.pair_frac > 0.0 and "pair_rng" in st:
+            self._pair_rng.bit_generator.state = st["pair_rng"]
+            for c, ptr in (st.get("pair_ptr") or {}).items():
+                ci = int(c)
+                if ci in self._pairs and len(self._pairs[ci]) > 0:
+                    self._pair_ptr[ci] = int(ptr) % len(self._pairs[ci])
+        self._recompute_rem()
 
 
 class DomainSampler:
@@ -117,9 +205,17 @@ class DomainSampler:
 
     def next(self) -> Packed:
         d = min(self.shares, key=lambda k: self.visited[k] / self.shares[k])
-        pk = self.streams[d].next()
-        self.visited[d] += pk.n_real
+        return self.next_domain(d)
+
+    def next_domain(self, domain: str) -> Packed:
+        pk = self.streams[domain].next()
+        self.visited[domain] += pk.n_real
         return pk
+
+    def next_pair(self) -> tuple[Packed, Packed]:
+        mol_dom = "molecule" if "molecule" in self.streams else next(iter(self.streams))
+        per_dom = "crystal" if "crystal" in self.streams else mol_dom
+        return self.next_domain(mol_dom), self.next_domain(per_dom)
 
     def state(self) -> dict:
         return {"visited": dict(self.visited), "shares": dict(self.shares), "streams": {d: s.state() for d, s in self.streams.items()}}
@@ -137,20 +233,45 @@ class DomainSampler:
                 s.load(st["streams"][d])
 
 
-class Prefetcher:
-    """Builds batches in a worker thread (on a side CUDA stream when the batches live on a GPU); `depth` batches are kept ready. Stateful streams: `state()` of the
-    stream runs ahead of training by up to depth + 1 batches, so a resume skips them (harmless for an epoch sampler). state() and the worker's next() share a lock
-    (no torn state in a checkpoint); load() restarts the worker so no pre-resume batch is served."""
+def _pin_to_device(pk: Packed, dev: torch.device, pin_memory: bool) -> Packed:
+    if dev.type != "cuda":
+        return pk
+    from dataclasses import fields, replace
+    b_updates = {}
+    for f in fields(pk.batch):
+        v = getattr(pk.batch, f.name)
+        if torch.is_tensor(v) and v.device != dev:
+            t = v.pin_memory() if (pin_memory and v.device.type == "cpu") else v
+            b_updates[f.name] = t.to(dev, non_blocking=True)
+    ex_updates = {
+        k: ((v.pin_memory() if (pin_memory and v.device.type == "cpu") else v).to(dev, non_blocking=True) if (torch.is_tensor(v) and v.device != dev) else v)
+        for k, v in pk.extra.items()
+    }
+    return replace(pk, batch=(replace(pk.batch, **b_updates) if b_updates else pk.batch), extra=ex_updates)
 
-    def __init__(self, stream, depth: int = 3) -> None:
+
+class Prefetcher:
+    """Builds batches in a worker thread (on a side CUDA stream with pinned H2D transfer); `depth` (default 4) batches are kept ready.
+    Supports single (`next()`) or paired (`paired=True`, `next_pair()`) prefetch plus optional background `csr_workers` plan prep."""
+
+    def __init__(self, stream, depth: int = 4, *, paired: bool = False, pin_memory: bool = True, csr_workers: int = 0) -> None:
         self.stream = stream
         self.wait_s = 0.0
-        self.q: queue.Queue = queue.Queue(maxsize=int(os.environ.get("LAM4_PREFETCH_DEPTH", depth)))
+        self.depth = int(os.environ.get("LAM4_PREFETCH_DEPTH", depth))
+        self.paired, self.pin_memory, self.csr_workers = bool(paired), bool(pin_memory), max(0, int(csr_workers))
+        self.q: queue.Queue = queue.Queue(maxsize=max(1, self.depth))
         dev = getattr(stream, "device", "cpu")
-        self.cuda = torch.cuda.is_available() and torch.device(dev).type == "cuda"
-        self.side = torch.cuda.Stream(torch.device(dev)) if self.cuda else None
+        self.target_device = torch.device(dev)
+        self.cuda = torch.cuda.is_available() and self.target_device.type == "cuda"
+        if self.cuda and self.target_device.index is None:
+            self.target_device = torch.device("cuda", torch.cuda.current_device())
+        self.side = torch.cuda.Stream(self.target_device) if self.cuda else None
         self.err: BaseException | None = None
         self.lock = threading.Lock()   # stream.next() in the worker vs state() / load() in the training thread
+        self._csr_pool = None
+        if self.csr_workers > 0:
+            from concurrent.futures import ThreadPoolExecutor
+            self._csr_pool = ThreadPoolExecutor(max_workers=self.csr_workers)
         self._start()
 
     def _start(self) -> None:
@@ -158,20 +279,52 @@ class Prefetcher:
         self.t = threading.Thread(target=self._work, daemon=True)
         self.t.start()
 
+    def _prep_csr(self, pk: Packed) -> None:
+        if self._csr_pool is None:
+            return
+        from lam4.data.padding import active_edge_count
+        from lam4.kernels.csr_plan import build_csr_plan_cpu
+        b = pk.batch
+        if b.pos.device.type == "cpu":
+            ei = b.edge_index
+            pk._csr_plan = self._csr_pool.submit(build_csr_plan_cpu, ei[1], ei[0], b.n_atoms, active_edges=active_edge_count(b)).result()  # type: ignore[attr-defined]
+
+    def _fetch_one(self):
+        if self.paired and hasattr(self.stream, "next_pair"):
+            if self.cuda:
+                with torch.cuda.stream(self.side):
+                    pm, pp = self.stream.next_pair()
+                    self._prep_csr(pm)
+                    self._prep_csr(pp)
+                    pm = _pin_to_device(pm, self.target_device, self.pin_memory)
+                    pp = _pin_to_device(pp, self.target_device, self.pin_memory)
+                    ev = torch.cuda.Event()
+                    ev.record(self.side)
+                return (pm, pp), ev
+            pm, pp = self.stream.next_pair()
+            self._prep_csr(pm)
+            self._prep_csr(pp)
+            return (pm, pp), None
+        if self.cuda:
+            with torch.cuda.stream(self.side):
+                pk = self.stream.next()
+                self._prep_csr(pk)
+                pk = _pin_to_device(pk, self.target_device, self.pin_memory)
+                ev = torch.cuda.Event()
+                ev.record(self.side)
+            return pk, ev
+        pk = self.stream.next()
+        self._prep_csr(pk)
+        return pk, None
+
     def _work(self) -> None:
         try:
             while not self.stop:
                 with self.lock:
-                    if self.cuda:
-                        with torch.cuda.stream(self.side):
-                            pk = self.stream.next()
-                            ev = torch.cuda.Event()
-                            ev.record(self.side)
-                    else:
-                        pk, ev = self.stream.next(), None
+                    item, ev = self._fetch_one()
                 while not self.stop:
                     try:
-                        self.q.put((pk, ev), timeout=0.1)
+                        self.q.put((item, ev), timeout=0.1)
                         break
                     except queue.Full:
                         continue
@@ -179,19 +332,40 @@ class Prefetcher:
             self.err = e
             self.q.put((None, None))
 
-    def next(self) -> Packed:
-        t0 = time.perf_counter()
-        pk, ev = self.q.get()
-        self.wait_s += time.perf_counter() - t0   # time the training thread was blocked on the packer (logged per window as feed_wait_ms)
-        if pk is None:
-            raise RuntimeError(f"batch worker died: {self.err!r}")
+    def _sync_item(self, item, ev):
         if ev is not None:
             cur = torch.cuda.current_stream()
             cur.wait_event(ev)
-            for t in [*vars(pk.batch).values(), *pk.extra.values()]:
-                if torch.is_tensor(t):
-                    t.record_stream(cur)
-        return pk
+            pks = item if isinstance(item, tuple) else (item,)
+            for pk in pks:
+                for t in [*vars(pk.batch).values(), *pk.extra.values()]:
+                    if torch.is_tensor(t):
+                        t.record_stream(cur)
+        return item
+
+    def next(self) -> Packed:
+        t0 = time.perf_counter()
+        item, ev = self.q.get()
+        self.wait_s += time.perf_counter() - t0   # time the training thread was blocked on the packer (logged per window as feed_wait_ms)
+        if item is None:
+            raise RuntimeError(f"batch worker died: {self.err!r}")
+        item = self._sync_item(item, ev)
+        return item[0] if isinstance(item, tuple) else item
+
+    def next_pair(self) -> tuple[Packed, Packed]:
+        if self.paired:
+            t0 = time.perf_counter()
+            item, ev = self.q.get()
+            self.wait_s += time.perf_counter() - t0
+            if item is None:
+                raise RuntimeError(f"batch worker died: {self.err!r}")
+            return self._sync_item(item, ev)
+        with self.lock:
+            pm, pp = self.stream.next_pair()
+        if self.cuda:
+            pm = _pin_to_device(pm, self.target_device, self.pin_memory)
+            pp = _pin_to_device(pp, self.target_device, self.pin_memory)
+        return pm, pp
 
     def state(self) -> dict:
         with self.lock:
@@ -213,3 +387,5 @@ class Prefetcher:
     def close(self) -> None:
         self.stop = True
         self.t.join(timeout=5.0)
+        if self._csr_pool is not None:
+            self._csr_pool.shutdown(wait=False)

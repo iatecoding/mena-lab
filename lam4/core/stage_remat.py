@@ -21,7 +21,13 @@ from lam4.core.edge_chunks import DEFAULT_CHUNK_EDGES, make_chunks
 from lam4.core.edge_ops import _check, _gain
 from lam4.core.edge_stream import StreamAgg, _StreamVJP, empty_z
 from lam4.core.edge_terms import finalise, normalise_qk
-from lam4.core.remat import RematSpec, remat_apply
+from lam4.core.remat import (
+    NODE_CHUNK_ATOMS,
+    RematSpec,
+    can_chunk_nodes,
+    chunked_node_apply,
+    remat_apply,
+)
 from lam4.core.spline_tables import windows
 
 MODES = ("none", "stage", "block")
@@ -78,24 +84,9 @@ def unit_finish(st, s, nc, domain: str):
     return remat_apply(RematSpec(lambda s_: (st.finish_plain(s_, nc, domain),), tuple(st.parameters())), (s,))[0]
 
 
-def _unit_a(st, s, vec, eg, nc, ten=None):
-    """A: prologue + edge op -> (num, z, dsum) for the stream path, (out,) for the ref / csr path."""
-    if eg.mode == "csr" and not eg.create_graph and not any(p.requires_grad for p in st.parameters()):
-        return (st.aggregate_plain(s, vec, eg, nc, ten=ten),), False
-    ts, rb = pack(eg, nc)
-    has_t = ten is not None
-    inputs = (s, vec, *([ten] if has_t else []), *ts)
-    if eg.mode != "stream":
-        def fn_ref(s_, v_, *rest):
-            t_, t = (rest[0], rest[1:]) if has_t else (None, rest)
-            return (st.aggregate_plain(s_, v_, *rb(*t), ten=t_),)
-        return remat_apply(RematSpec(fn_ref, tuple(st.parameters())), inputs), False
-    plan = eg.chunks if eg.chunks is not None else make_chunks(eg.recv, eg.send, eg.pos.shape[0], DEFAULT_CHUNK_EDGES)
-
-    def ins_of(s_, v_, rest):
-        t_, t = (rest[0], rest[1:]) if has_t else (None, rest)
-        e, n = rb(*t)
-        return e, stream_ins(st, e, *st.prep(s_, v_, e, n, t_))
+def _stream_unit_a(st, e_in, ins_of, inputs: tuple):
+    """Shared streaming remat Unit A with exact `_StreamVJP` double backward."""
+    plan = e_in.chunks if e_in.chunks is not None else make_chunks(e_in.recv, e_in.send, e_in.pos.shape[0], DEFAULT_CHUNK_EDGES)
 
     def fn(s_, v_, *rest):
         e, ins = ins_of(s_, v_, rest)
@@ -107,36 +98,83 @@ def _unit_a(st, s, vec, eg, nc, ten=None):
         needs = tuple(bool(t.requires_grad) for t in sins)
         sh_c = e.pos.new_zeros(0) if e.shift.requires_grad else e.shift
         with torch.set_grad_enabled(create_graph):
-            gi = _StreamVJP.apply(plan, st.layout, st.edge_cfg, needs, sh_c, empty_z(e.pos, e.z), *(sins if create_graph else [t.detach() for t in sins]), *gs)
+            gi = _StreamVJP.apply(
+                plan, st.layout, st.edge_cfg, needs, sh_c, empty_z(e.pos, e.z),
+                *(sins if create_graph else [t.detach() for t in sins]), *gs,
+            )
         pairs = [(t, g) for t, g, nd in zip(sins, gi, needs) if nd]
         return torch.autograd.grad([t for t, _ in pairs], wrt, [g for _, g in pairs], create_graph=create_graph, allow_unused=True)
+
     return remat_apply(RematSpec(fn, tuple(st.parameters()), vjp), inputs), True
 
 
-def post_chunked_crystal(st, s, vec, agg, nc, domain: str, fin: bool, ten=None, return_ten: bool = False, *, raw: bool = False, chunk_atoms: int = 4096):
+def _unit_a(st, s, vec, eg, nc, ten=None):
+    """A: prologue + edge op -> (num, z, dsum) for the stream path, (out,) for the ref / csr path."""
+    ts, rb = pack(eg, nc)
+    has_t = ten is not None
+    inputs = (s, vec, *([ten] if has_t else []), *ts)
+    if eg.mode != "stream":
+        def fn_ref(s_, v_, *rest):
+            t_, t = (rest[0], rest[1:]) if has_t else (None, rest)
+            return (st.aggregate_plain(s_, v_, *rb(*t), ten=t_),)
+        return remat_apply(RematSpec(fn_ref, tuple(st.parameters())), inputs), False
+
+    def ins_of(s_, v_, rest):
+        t_, t = (rest[0], rest[1:]) if has_t else (None, rest)
+        e, n = rb(*t)
+        return e, stream_ins(st, e, *st.prep(s_, v_, e, n, t_))
+
+    return _stream_unit_a(st, eg, ins_of, inputs)
+
+
+def _unit_a_ext(st, s, vec, eg, nc, ten=None, cond_atom=None, want_dsum: bool = False):
+    """Extended edge-only remat unit (supports optional `ten`, `cond_atom`, and CSR `return_dsum`)."""
+    ts, rb = pack(eg, nc)
+    opts = [(k, v) for k, v in (("ten", ten), ("ca", cond_atom)) if v is not None]
+    k_opt = len(opts)
+    inputs = (s, vec, *(v for _, v in opts), *ts)
+    if eg.mode != "stream":
+        def fn_ref(s_, v_, *rest):
+            d = {k: rest[i] for i, (k, _) in enumerate(opts)}
+            e, n = rb(*rest[k_opt:])
+            out = st.aggregate_plain(s_, v_, e, n, d.get("ten"), cond_atom=d.get("ca"), return_dsum=want_dsum)
+            return out if want_dsum else (out,)
+        return remat_apply(RematSpec(fn_ref, tuple(st.parameters())), inputs), False
+
+    def ins_of(s_, v_, rest):
+        d = {k: rest[i] for i, (k, _) in enumerate(opts)}
+        e, n = rb(*rest[k_opt:])
+        return e, stream_ins(st, e, *st.prep(s_, v_, e, n, d.get("ten"), cond_atom=d.get("ca")))
+
+    return _stream_unit_a(st, eg, ins_of, inputs)
+
+
+def post_chunked_crystal(st, s, vec, agg, nc, domain: str, fin: bool, ten=None, return_ten: bool = False, *, raw: bool = False, chunk_atoms: int | None = None, create_graph: bool = False):
     has_t = ten is not None
     ps = tuple(st.parameters())
-    n_tot = s.shape[0]
+    ca = chunk_atoms if chunk_atoms is not None else (4096 if st.remat != "none" else (16384 if s.device.type == "cuda" else NODE_CHUNK_ATOMS))
 
-    def fn_slice(a0: int, a1: int):
+    def fn_chunk(a0: int, a1: int, *xs):
+        s_, v_ = xs[:2]
+        t_, a = (xs[2], xs[3:]) if has_t else (None, xs[2:])
+        out = finalise(*a, st.layout) if raw else a[0]
+        res = st.post_plain(s_, v_, out, domain, t_, return_ten=return_ten, allow_fused=not create_graph)
+        if not fin:
+            return res
         nc_s = None if nc is None else replace(nc, atom_mask=None if nc.atom_mask is None else nc.atom_mask[a0:a1], graph=None)
+        return (st.finish_plain(res[0], nc_s, domain), *res[1:])
 
-        def _fn(s_, v_, *rest):
-            t_, a = (rest[0], rest[1:]) if has_t else (None, rest)
-            out = finalise(*a, st.layout) if raw else a[0]
-            res = st.post_plain(s_, v_, out, domain, t_, return_ten=return_ten)
-            return ((st.finish_plain(res[0], nc_s, domain) if fin else res[0]), *res[1:])
-        ins_s = (s[a0:a1], vec[a0:a1], *([ten[a0:a1]] if has_t else []), *(x[a0:a1] for x in agg))
-        return remat_apply(RematSpec(_fn, ps), ins_s)
-
-    parts = [fn_slice(a0, min(a0 + chunk_atoms, n_tot)) for a0 in range(0, n_tot, chunk_atoms)]
-    return tuple(torch.cat([p[k] for p in parts], dim=0) for k in range(len(parts[0])))
+    sliced = (s, vec, *([ten] if has_t else []), *agg)
+    return chunked_node_apply(fn_chunk, sliced, params=ps, chunk_atoms=ca, create_graph=create_graph)
 
 
 def unit_block(st, s, vec, eg, nc, domain: str, fin: bool, ten=None, return_ten: bool = False):
     agg, raw = _unit_a(st, s, vec, eg, nc, ten)
-    if s.shape[0] > 4096 and domain == "crystal" and st._inv_hook is None and not torch.compiler.is_compiling():
-        return post_chunked_crystal(st, s, vec, agg, nc, domain, fin, ten, return_ten=return_ten, raw=raw)
+    if s.shape[0] > 4096 and st._inv_hook is None and not torch.compiler.is_compiling():
+        res = post_chunked_crystal(st, s, vec, agg, nc, domain, fin and domain == "crystal", ten, return_ten=return_ten, raw=raw, create_graph=eg.create_graph)
+        if fin and domain != "crystal":
+            return (unit_finish(st, res[0], nc, domain), *res[1:])
+        return res
     has_t = ten is not None
     ps = tuple(st.parameters())
 

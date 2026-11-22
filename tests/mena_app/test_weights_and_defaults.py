@@ -26,14 +26,17 @@ def _fake_weights(tmp_path, data=b"mena-test-weights"):
 
 def test_fresh_install_lists_shipped_models_as_downloadable(home):
     rows = {m["id"]: m for m in models.all_models()}
-    assert set(rows) >= {"lam5-v1", "lam-400k"}
+    assert set(rows) >= {"lam6-v1", "lam5-v1", "lam-400k"}
     for m in rows.values():
-        if m.get("file"):
+        if m.get("file") and m.get("release") == "preview":  # listed, never downloaded until it is published
+            assert not m["available"] and not m["downloadable"]
+        elif m.get("file"):
             assert not m["available"] and m["downloadable"]
             assert m["path"].startswith(str(home / "home" / "models"))
             assert len(m["urls"]) >= 2 and len(m["sha256"]) == 64
     assert models.choose("auto", "molecule")["id"] == "lam5-v1"
-    assert models.choose("auto", "crystal")["id"] == "lam-400k"
+    assert models.choose("auto", "crystal")["id"] == "lam6-v1"
+    assert models.choose("auto", "slab")["id"] == "lam6-v1"
 
 
 def test_download_falls_back_to_next_mirror_and_checks_hash(home):
@@ -54,15 +57,15 @@ def test_download_rejects_damaged_file_and_leaves_nothing(home):
 
 
 def test_default_model_per_kind_drives_auto(home):
-    assert models.choose("auto", "crystal")["id"] == "lam-400k"
+    assert models.choose("auto", "crystal")["id"] == "lam6-v1"
     models.set_default("crystal", "lam5-v1")
     m = models.choose("auto", "crystal")
     assert m["id"] == "lam5-v1" and "Your default" in m["choice_reason"]
-    assert models.choose("auto", "slab")["id"] == "lam-400k"  # other kinds keep their own default
+    assert models.choose("auto", "slab")["id"] == "lam6-v1"  # other kinds keep their own default
     assert models.choose("lam-400k", "crystal")["id"] == "lam-400k"  # an explicit choice still wins
     models.set_default("crystal", "auto")
     assert settings.load()["default_model"] == {}
-    assert models.choose("auto", "crystal")["id"] == "lam-400k"
+    assert models.choose("auto", "crystal")["id"] == "lam6-v1"
 
 
 def test_default_model_rejects_unknown_or_wrong_domain(home, monkeypatch):

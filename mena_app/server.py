@@ -35,7 +35,8 @@ MAX_JSON = 10_000_000
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
-MODEL_KEYS = ("id", "title", "domains", "rank", "metrics", "training", "available", "downloadable", "size_mb", "backend", "dtypes", "lots")
+MODEL_KEYS = ("id", "title", "role", "domains", "rank", "metrics", "training", "available", "downloadable", "size_mb", "backend",
+              "dtypes", "lots", "release", "interpretable")
 
 
 def _models_public() -> list[dict]:

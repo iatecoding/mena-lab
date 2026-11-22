@@ -79,7 +79,9 @@ def snapshot_physics(atoms, calc_results: dict | None = None) -> dict:
     return out
 
 
-def frame(atoms, forces=None, label: str = "", dipole=None, *, charges=None, spins=None, alpha=None, fmag=None, decomp=None) -> dict:
+def frame(atoms, forces=None, label: str = "", dipole=None, *, charges=None, spins=None, alpha=None, fmag=None, decomp=None,
+          extra: dict | None = None) -> dict:
+    """One viewer frame. `extra` adds more per-atom colourings by name (e.g. unpaired, pauli from the interpretation)."""
     n = len(atoms)
     f = {"symbols": atoms.get_chemical_symbols(), "positions": [[round(float(v), 4) for v in p] for p in atoms.get_positions()], "label": label}
     if any(atoms.pbc):
@@ -101,6 +103,10 @@ def frame(atoms, forces=None, label: str = "", dipole=None, *, charges=None, spi
         f["alpha"] = al
     if decomp is not None:
         f["decomp"] = decomp
+    for key, arr in (extra or {}).items():
+        vals = _non_zero_vec(arr, n, 1e-6)
+        if vals is not None:
+            f[key] = vals
     return f
 
 

@@ -1,7 +1,7 @@
 // Pinned bottom dock: compact 2-line execution plan, expandable Tune / Code / Why drawer, and always-visible Run button.
 import { el, clear, api, fmt, debounce, approx } from './util.js';
 import { state, emit, on, buildJob, task, domain } from './state.js';
-import { lotLabel, deviceLabel, DTYPE } from './labels.js';
+import { lotLabel, deviceLabel, DTYPE, PRECISION } from './labels.js';
 import { markInvalid, SHORT_TITLES } from './tasks.js';
 
 let host, whyHost, drawer, drawerTitle, runBtn, runLabel, cancelBtn, errBox, activeDrawer = null, seq = 0;
@@ -47,6 +47,7 @@ const later = debounce(refreshPlan, 250);
 
 function lotShort(d) {
   if (d.lot && d.lot !== 'auto') return lotLabel(d.lot);
+  if (d.resolved_lot && d.resolved_lot !== 'auto') return lotLabel(d.resolved_lot);
   return domain() === 'molecule' ? 'ωB97M-V' : 'PBE / PBE+U';
 }
 
@@ -64,7 +65,8 @@ function renderWhy(p) {
     row('Model', m.title || d.model, (d.reasons && d.reasons.model) || m.metrics),
     row('Theory', lotShort(d), d.reasons && d.reasons.lot),
     row('Device', deviceLabel(d.device), d.reasons && d.reasons.device),
-    row('Precision', DTYPE[d.dtype] || d.dtype, d.reasons && ((d.reasons.dtype || '') + (d.low_memory ? ' Low-memory mode is on.' : ''))),
+    row('Precision', d.precision && d.precision !== 'auto' ? `${DTYPE[d.dtype] || d.dtype} (${PRECISION[d.precision] || d.precision})` : (DTYPE[d.dtype] || d.dtype),
+      d.reasons && (((d.precision && d.precision !== 'auto' && d.reasons.precision) ? d.reasons.precision : (d.reasons.dtype || '')) + (d.low_memory ? ' Low-memory mode is on.' : ''))),
     row('Compiled', d.compile ? 'On' : 'Off', d.reasons && d.reasons.compile),
     row('Est. time', d.seconds == null ? 'Not calibrated' : approx(d.seconds),
       d.seconds == null ? 'Run mena calibrate once for hardware timing.' : `${fmt(d.calls, 0)} call${d.calls === 1 ? '' : 's'} on ${fmt(d.atoms, 0)} atoms.`),
@@ -117,7 +119,7 @@ function render() {
   const busy = !!state.running;
   errBox.hidden = !state.planError || busy;
   errBox.textContent = state.planError || '';
-  runBtn.disabled = busy || !p || !!state.planError || (p && p.decision.memory_level === 'refuse');
+  runBtn.disabled = busy || !!state.planPending || !p || !!state.planError || (p && p.decision.memory_level === 'refuse');
   runBtn.hidden = busy;
   cancelBtn.hidden = !busy;
 }
