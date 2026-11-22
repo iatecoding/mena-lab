@@ -16,7 +16,7 @@ from mena_app import report as R
 from mena_app import structures
 from mena_app.routing import md_repeat
 from mena_app.runtime import Cancelled, UserError
-from mena_app.tasks.common import setup, thermalize, write_structure, write_trajectory
+from mena_app.tasks.common import optimize, setup, thermalize, write_structure, write_trajectory
 
 
 def _has_nonzero_momenta(atoms) -> bool:
@@ -214,6 +214,21 @@ def run(ctx):
     if int(atoms.get_number_of_degrees_of_freedom()) <= 0:
         raise UserError("All atoms are fixed; dynamics needs at least one free degree of freedom.")
     n = len(atoms)
+    prerelax_steps = 0
+    if p.get("prerelax", False):
+        ctx.status("relaxing starting structure before dynamics")
+        pre = optimize(ctx, atoms, "LBFGS", fmax=0.05, steps=200, cell=False, chart="prerelax", label="pre-relax")
+        prerelax_steps = int(pre["steps"])
+        ctx.log(f"pre-relax finished in {prerelax_steps} step(s) (converged={pre['converged']})")
+        if pre["cancelled"]:
+            files = [write_structure(ctx, atoms, "final")]
+            return {
+                "headline": f"Stopped during pre-relaxation after {prerelax_steps} steps.",
+                "tiles": [], "facts": {"Steps": 0, "Atoms": n, "Pre-relax steps": prerelax_steps}, "tables": [], "charts": [],
+                "viewer": R.viewer([R.frame_with_physics(atoms, R.snapshot_physics(atoms), label="pre-relax")], atoms),
+                "files": files, "notes": ["Stopped by you during pre-relaxation before dynamics began."], "cancelled": True,
+                "raw": {"time_ps": [], "temperature_K": [], "epot_eV": [], "etot_eV": [], "volume_A3": []},
+            }
     has_cons = bool(getattr(atoms, "constraints", None))
     if _has_nonzero_momenta(atoms):
         if has_cons:
@@ -269,7 +284,9 @@ def run(ctx):
         )
         if p["ensemble"] == "nve":
             eng_kw["ensemble"] = "nve"
-        ctx.status(f"running {p['ensemble'].upper()} at {p['temperature']:.0f} K (fast GPU engine)")
+        dev_name = str(getattr(calc, "device", "")).lower()
+        eng_tag = "fast GPU engine" if dev_name.startswith(("cuda", "mps")) else "fast MDEngine"
+        ctx.status(f"running {p['ensemble'].upper()} at {p['temperature']:.0f} K ({eng_tag})")
         eng = calc.md_engine(atoms, **eng_kw)
         ep0 = eng.energy_ev()
         ek0 = float(atoms.get_kinetic_energy())
@@ -351,9 +368,12 @@ def run(ctx):
               R.chart("md_energy", "Total energy (per atom, from start)", [{"name": "total energy", "x": t_ps, "y": [(e - etot[0]) / n * 1000 for e in etot]}], "line", "time (ps)", "meV/atom")]
     idx = R.subsample(len(frames), 80)
     files = [write_trajectory(ctx, frames), write_structure(ctx, atoms, "final")]
+    facts = {"Steps": steps, "Atoms": n, "Start-up (incl. compiling)": f"{startup:.1f} s"}
+    if prerelax_steps:
+        facts["Pre-relax steps"] = prerelax_steps
     return {
         "headline": f"{t_ps[-1] if t_ps else 0:.3f} ps of {p['ensemble'].upper()} dynamics at {p['temperature']:.0f} K in {sec:.0f} s ({ns_day:.2f} ns/day).",
-        "tiles": tiles, "facts": {"Steps": steps, "Atoms": n, "Start-up (incl. compiling)": f"{startup:.1f} s"}, "tables": [], "charts": charts,
+        "tiles": tiles, "facts": facts, "tables": [], "charts": charts,
         "viewer": R.viewer([R.frame_with_physics(frames[i], phys[i], label=f"{i * p['save_every'] * p['timestep'] / 1000:.3f} ps") for i in idx], atoms),
         "files": files, "notes": ["Stopped by you; the trajectory covers the time run so far."] if state["cancelled"] else [], "cancelled": state["cancelled"],
         "raw": {"time_ps": t_ps, "temperature_K": temps, "epot_eV": epot, "etot_eV": etot, "volume_A3": vols},

@@ -257,6 +257,7 @@ def make_handler(app: App):
             if path == "/api/plan":
                 spec, pl = app.plan(self.body())
                 return self.json({"spec": spec, "analysis": pl["analysis"], "decision": pl["decision"], "model": pl["model_public"],
+                                  "notes": pl.get("notes", []),
                                   "exports": {"cli": export.to_cli(spec), "python": export.to_python(spec, pl, __version__), "json": export.to_json(spec)}})
             if path == "/api/jobs":
                 spec, pl = app.plan(self.body())

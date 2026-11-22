@@ -58,6 +58,13 @@ atoms.calc = calculator("lam6-v1")                # or "lam5-v1" / "lam-400k"; d
 
 The model weights (`34 MB`, `35 MB`, and `26 MB`) download automatically the first time they are needed (and are verified by SHA-256).
 
+### Tips for SMILES & Molecular Dynamics
+
+- **Relax SMILES structures first:** Entering a SMILES string builds one approximate 3D force-field conformer (not a DFT/MLIP minimum, and not a full conformer search). Run `mena relax` first before comparing single-point energies/dipoles, or turn on **Relax first** (`--prerelax`) when starting MD directly from SMILES so stored ring/steric strain does not spike the temperature.
+- **MD time step & thermostat friction:** `1.0 fs` works well for relaxed organic molecules at `300 K`; use `0.5 fs` above `500 K` or for stiff/rough geometries, and `2.0 fs` only for heavy-atom systems without hydrogen. Default friction `0.01 /fs` (`τ = 100 fs`) suits production NVT; increase to `0.05–0.1 /fs` (`τ = 10–20 fs`) to damp initial strain faster during equilibration, or use **NVE** to check energy conservation.
+- **Verify charge & spin on edge cases:** Formal charges and simple organic radicals (`[O-]`, `[NH4+]`, `[CH3]`) are inferred automatically from SMILES, but check **Charge** and **Spin multiplicity** explicitly for diradicals (e.g. triplet `O₂`), carbenes, or transition-metal complexes. Multi-fragment SMILES (e.g. `A.B`) run in vacuum without a confining box.
+- **Model selection:** Keep **Auto** (`Mena-LAM-s` / `lam5-v1` for molecules; `Mena-LAM-6` / `lam6-v1` for crystals & surfaces). Pick `lam6-v1` explicitly on molecules if you want its extra physics-head readouts (`--explain`: HOMO–LUMO gap, Pauli overlap, unpaired-electron index).
+
 ## Models
 
 | Model | Used for | Highlights |

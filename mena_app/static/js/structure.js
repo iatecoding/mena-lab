@@ -96,7 +96,7 @@ function smilesField(slot = 1) {
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
   return el('div', { class: 'field' },
     el('div', { class: 'field-head' }, el('label', { class: 'lbl' }, 'Or build from SMILES'),
-      el('span', { class: 'hint-dot', title: 'Generates a 3D molecular conformer directly from an OpenSMILES string (molecules, ions & radicals).' }, '?')),
+      el('span', { class: 'hint-dot', title: 'Generates one approximate 3D conformer from an OpenSMILES string (auto-infers formal charges & simple radicals; verify spin for diradicals/metals, and relax before MD or energy comparisons).' }, '?')),
     el('div', { class: 'smiles-row' }, inp, el('button', { class: 'btn', type: 'button', onclick: go }, 'Build')));
 }
 

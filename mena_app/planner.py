@@ -92,4 +92,10 @@ def plan(spec: dict) -> dict:
         mem_kind = "VRAM" if str(decision.get("device", "")).startswith("cuda") else "RAM"
         raise PlanError(f"This job needs about {decision['peak_gb']:.1f} GB but only {free_str} ({mem_kind}) is free. Use a smaller system or close other programs.")
     public = {k: model.get(k) for k in ("id", "title", "training", "metrics", "backend")}
-    return {"analysis": a, "model": model, "model_public": public, "decision": decision, "machine": m}
+    notes: list[str] = []
+    if spec.get("structure", {}).get("format") == "smiles":
+        if spec["task"] == "md" and not spec.get("params", {}).get("prerelax"):
+            notes.append("SMILES builds an approximate 3D conformer: enable 'Relax first' (or run Relax beforehand) so strain energy does not spike the MD temperature.")
+        elif spec["task"] == "singlepoint":
+            notes.append("SMILES builds one approximate 3D conformer: run Relax first for minimum-energy comparisons, charges, or dipoles.")
+    return {"analysis": a, "model": model, "model_public": public, "decision": decision, "machine": m, "notes": notes}

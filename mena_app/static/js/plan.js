@@ -72,6 +72,9 @@ function renderWhy(p) {
       d.seconds == null ? 'Run mena calibrate once for hardware timing.' : `${fmt(d.calls, 0)} call${d.calls === 1 ? '' : 's'} on ${fmt(d.atoms, 0)} atoms.`),
     row('Memory', d.peak_gb != null && d.free_gb ? `${fmt(d.peak_gb, 2)} of ${fmt(d.free_gb, 1)} GB free` : 'Uncalibrated',
       d.reasons && d.reasons.low_memory));
+  if (p.notes && p.notes.length) {
+    p.notes.forEach(n => whyHost.append(row('Tip', '', n)));
+  }
 }
 
 function sep() { return el('span', { class: 'sep', 'aria-hidden': 'true' }, '·'); }
@@ -111,6 +114,9 @@ function render() {
         el('span', { class: 'membar ' + (d.memory_level || '') }, el('i', { style: `width:${Math.max(3, pct)}%` }))));
     }
     host.append(line1, line2);
+    if (p.notes && p.notes.length) {
+      host.append(el('div', { class: 'plan-line muted', title: p.notes.join('\n') }, p.notes[0]));
+    }
   }
   renderWhy(p);
 

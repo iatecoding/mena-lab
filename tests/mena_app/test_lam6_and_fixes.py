@@ -354,3 +354,40 @@ def test_md_traced_imports_without_lam4_train() -> None:
     )
     proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_smiles_planner_notes_and_md_prerelax(tmp_path: Path) -> None:
+    import io
+    from mena_app import export, planner, runtime, validation
+    from mena_app.tasks import md as md_task
+
+    spec_md = validation.validate({"task": "md", "structure": {"format": "smiles", "text": "CCO"}, "params": {"steps": 4, "save_every": 2}})
+    pl_md = planner.plan(spec_md)
+    assert pl_md["notes"] and "Relax first" in pl_md["notes"][0]
+
+    spec_md_pre = validation.validate(
+        {"task": "md", "structure": {"format": "smiles", "text": "CCO"}, "params": {"steps": 4, "save_every": 2, "prerelax": True}}
+    )
+    pl_md_pre = planner.plan(spec_md_pre)
+    assert pl_md_pre["notes"] == []
+    assert "LBFGS(atoms).run" in export.to_python(spec_md_pre, pl_md_pre, "0.1.0")
+
+    spec_sp = validation.validate({"task": "singlepoint", "structure": {"format": "smiles", "text": "CCO"}})
+    assert any("approximate 3D conformer" in n for n in planner.plan(spec_sp)["notes"])
+
+    spec_builtin = validation.validate({"task": "md", "structure": {"format": "builtin", "text": "si"}, "params": {"steps": 4}})
+    assert planner.plan(spec_builtin)["notes"] == []
+
+    if pl_md_pre["model"].get("available"):
+        ctx = runtime.Context(
+            {
+                "spec": spec_md_pre,
+                "decision": {**pl_md_pre["decision"], "device": "cpu", "compile": False},
+                "model": pl_md_pre["model"],
+                "workdir": str(tmp_path),
+            },
+            io.StringIO(),
+        )
+        res = md_task.run(ctx)
+        assert res["facts"]["Steps"] == 4
+        assert res["facts"].get("Pre-relax steps", 0) >= 1

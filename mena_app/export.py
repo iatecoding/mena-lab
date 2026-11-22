@@ -86,8 +86,10 @@ def _md_body(p: dict, is_mol: bool = False) -> str:
     ens = p.get("ensemble", "nvt")
     seed = int(p.get("seed", 0))
     iv = max(1, int(p.get("save_every", 10)))
+    pre = "from ase.optimize import LBFGS\nLBFGS(atoms).run(fmax=0.05, steps=200)\n" if p.get("prerelax") else ""
     init_vel = (
-        "import numpy as np\n"
+        pre
+        + "import numpy as np\n"
         "from ase import units\n"
         "from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation\n"
         f"MaxwellBoltzmannDistribution(atoms, temperature_K={p['temperature']}, rng=np.random.default_rng({seed}))\n"
