@@ -2,17 +2,18 @@
 
 # Mena-Lab
 
-Fast machine-learned interatomic potentials for molecules, crystals, and surfaces, with a local web app, command line,
-and Python API that run on your own computer (Windows, macOS, Linux; CPU, NVIDIA CUDA GPU, or Apple Silicon MPS GPU).
+> I am an ML student. I used my personal resources (money and time) and ran multiple iterations to reach this level. I hope this is in some ways beneficial to the field and to the community. Give me your feedback.
 
-A single command opens the browser interface so you can inspect structures, preview runtime cost and memory estimates,
-relax geometries, run molecular dynamics, compute IR/Raman spectra or phonons, and find reaction barriers without boilerplate.
+Mena-Lab runs fast machine-learned interatomic potentials for molecules, crystals, and surfaces on your own computer (Windows, macOS, Linux; CPU, NVIDIA GPU, or Apple Silicon). It includes a local web app, a command-line interface, and an ASE-compatible Python API.
 
-Mena-Lab is an independent project developed and trained with personal resources. It ships three compact models (~26–35 MB):
-**Mena-LAM-6** (`lam6-v1`, default for crystals & surfaces, with physics interpretation heads) and **Mena-LAM-s** (`lam5-v1`,
-default for molecules, IR & Raman, and large biomolecular scaling), plus **Mena-LAM-preview** (`lam-400k`) kept for comparison.
-Fused Metal/Triton/CPU kernels and low-memory modes bring high-throughput molecular and materials simulation to laptops and workstations;
-NVIDIA CUDA runs use Triton Dual-CSR / fused kernels when available and fall back cleanly to PyTorch without requiring a local CUDA build toolchain.
+You can relax geometries and unit cells, run NVE/NVT/NPT molecular dynamics, compute vibrational frequencies with IR and Raman intensities, calculate crystal phonon bands and density of states, and find NEB reaction barriers. Before running a job, the app estimates runtime and memory so you know what fits on your machine.
+
+It ships three compact checkpoints (26–35 MB) that download automatically on first use and are checked by SHA-256:
+- Mena-LAM-6 (`lam6-v1`), used by default for crystals and surfaces, with optional electronic descriptors (HOMO–LUMO gap, radical character, steric overlap, and spin exchange).
+- Mena-LAM-s (`lam5-v1`), used by default for molecules, biomolecules, partial charges, dipoles, polarizabilities, and IR/Raman spectra.
+- Mena-LAM-preview (`lam-400k`), an earlier materials checkpoint kept for comparison.
+
+Everything runs on standard PyTorch with GPU acceleration on Apple Silicon and NVIDIA GPUs, and falls back cleanly to CPU without requiring a local CUDA compiler.
 
 ## Install
 
@@ -20,82 +21,77 @@ NVIDIA CUDA runs use Triton Dual-CSR / fused kernels when available and fall bac
 pip install git+https://github.com/iatecoding/mena-lab
 ```
 
-Python 3.10 or newer. For an NVIDIA GPU, install the CUDA build of [PyTorch](https://pytorch.org/get-started/locally/) first.
+Requires Python 3.10 or newer. On an NVIDIA GPU, install the CUDA build of [PyTorch](https://pytorch.org/get-started/locally/) first.
 
-## Use
+## Quick start
+
+Launch the local web interface:
 
 ```bash
 mena webapp
 ```
 
-Opens the app in your browser. Drop in a CIF, XYZ, or POSCAR file (or pick an example), choose a calculation, and press **Run**.
-Before running, the app shows the model, device, level of theory, expected time, and memory. Every result comes with plots,
-an interactive 3D view, downloadable files, and the CLI/Python/JSON script that reproduces it.
+Drop in a CIF, XYZ, or POSCAR file (or enter a SMILES string or pick a built-in example), choose a calculation, and run. Every completed job saves plots, an interactive 3D structure view, output files, and the CLI/Python/JSON recipe to reproduce it.
 
-The same from the command line:
+From the command line:
 
 ```bash
-mena sp caffeine --explain                    # energy, forces, charges, dipole & physics heads
-mena relax structure.cif --fmax 0.01          # relax atoms and cell
+mena sp caffeine --explain                    # energy, forces, charges, dipole & electronic descriptors
+mena relax structure.cif --fmax 0.01          # relax atomic positions and unit cell
 mena md water_box.extxyz --temperature 300 --steps 10000
-mena vib aspirin.xyz                          # frequencies, IR and Raman spectra
-mena phonons si --supercell 3                 # band structure and density of states
+mena vib aspirin.xyz                          # harmonic frequencies, IR and Raman spectra
+mena phonons si --supercell 3                 # phonon band structure and DOS
 mena neb reactant.xyz product.xyz --images 9  # reaction barrier
-mena <task> --help                            # every option
+mena <task> --help                            # list all options
 ```
 
-A structure can be a file, `smiles:CCO`, or an example name. Each run writes a folder with the results and a `job.json`
-you can repeat with `mena run job.json`.
+Input structures can be a file path, `smiles:CCO`, or a built-in example name. Each run saves a `job.json` you can re-run later with `mena run job.json`.
 
-From Python, as an [ASE](https://wiki.fysik.dtu.dk/ase/) calculator or one-call helpers:
+From Python (as an [ASE](https://wiki.fysik.dtu.dk/ase/) calculator or one-line helper):
 
 ```python
 from mena_app import calculator, singlepoint
 
-res = singlepoint("caffeine", device="auto")      # picks lam5-v1 for molecules, lam6-v1 for crystals/surfaces
-atoms.calc = calculator("lam6-v1")                # or "lam5-v1" / "lam-400k"; device="cuda" / "mps" for a GPU
+res = singlepoint("caffeine", device="auto")      # uses lam5-v1 for molecules, lam6-v1 for crystals/surfaces
+atoms.calc = calculator("lam6-v1")                # or "lam5-v1" / "lam-400k"; device="cuda" / "mps" / "cpu"
 ```
-
-The model weights (`34 MB`, `35 MB`, and `26 MB`) download automatically the first time they are needed (and are verified by SHA-256).
-
-### Tips for SMILES & Molecular Dynamics
-
-- **Relax SMILES structures first:** Entering a SMILES string builds one approximate 3D force-field conformer (not a DFT/MLIP minimum, and not a full conformer search). Run `mena relax` first before comparing single-point energies/dipoles, or turn on **Relax first** (`--prerelax`) when starting MD directly from SMILES so stored ring/steric strain does not spike the temperature.
-- **MD time step & thermostat friction:** `1.0 fs` works well for relaxed organic molecules at `300 K`; use `0.5 fs` above `500 K` or for stiff/rough geometries, and `2.0 fs` only for heavy-atom systems without hydrogen. Default friction `0.01 /fs` (`τ = 100 fs`) suits production NVT; increase to `0.05–0.1 /fs` (`τ = 10–20 fs`) to damp initial strain faster during equilibration, or use **NVE** to check energy conservation.
-- **Verify charge & spin on edge cases:** Formal charges and simple organic radicals (`[O-]`, `[NH4+]`, `[CH3]`) are inferred automatically from SMILES, but check **Charge** and **Spin multiplicity** explicitly for diradicals (e.g. triplet `O₂`), carbenes, or transition-metal complexes. Multi-fragment SMILES (e.g. `A.B`) run in vacuum without a confining box.
-- **Model selection:** Keep **Auto** (`Mena-LAM-s` / `lam5-v1` for molecules; `Mena-LAM-6` / `lam6-v1` for crystals & surfaces). Pick `lam6-v1` explicitly on molecules if you want its extra physics-head readouts (`--explain`: HOMO–LUMO gap, Pauli overlap, unpaired-electron index).
 
 ## Models
 
-| Model | Used for | Highlights |
+| Model | Default for | Accuracy & capabilities |
 |---|---|---|
-| **Mena-LAM-6** (`lam6-v1`) | crystals and surfaces | Default materials model; Matbench Discovery CPS 0.874, F1 0.904, κ<sub>SRME</sub> 0.182; OMol25 val energy 2.00, forces 0.40 kcal/mol/Å; OC20, OC25, MAD-1.6, OMC25, SPICE 2; physics heads (`--explain`: HOMO–LUMO gap, unpaired-electron index, Pauli overlap, spin exchange) |
-| **Mena-LAM-s** (`lam5-v1`) | molecules | Default molecular model; OMol25 held-out energy 1.64 kcal/mol, forces 0.34 kcal/mol/Å; PLF547 protein–ligand 0.297 kcal/mol; partial charges, dipole, polarizability, IR and Raman |
-| **Mena-LAM-preview** (`lam-400k`) | crystals and surfaces | Earlier preview model kept for comparison; Matbench Discovery F1 0.905, CPS 0.849, κ<sub>SRME</sub> 0.307; DynaMat MD CMDS 0.787 |
+| Mena-LAM-6 (`lam6-v1`) | Crystals & surfaces | Matbench Discovery CPS 0.874, F1 0.904, thermal conductivity κ<sub>SRME</sub> 0.182 (0/103 imaginary modes); OC20/OC25/MAD-1.6 catalysis & OMC25 molecular crystals; OMol25 val 2.00 kcal/mol E, 0.40 kcal/mol/Å F; electronic descriptors via `--explain` |
+| Mena-LAM-s (`lam5-v1`) | Molecules | OMol25 held-out 1.64 kcal/mol E, 0.34 kcal/mol/Å F; PLF547 protein–ligand MAE 0.297 kcal/mol vs. CCSD(T); TorsionNet500 0.205 kcal/mol; partial charges, dipole, polarizability, IR & Raman spectra |
+| Mena-LAM-preview (`lam-400k`) | Kept for comparison | Earlier materials checkpoint; Matbench Discovery F1 0.905, CPS 0.849, κ<sub>SRME</sub> 0.307; DynaMat MD CMDS 0.787 |
 
-Automatic picks the model by structure type (`lam6-v1` for crystals/surfaces, `lam5-v1` for molecules). To override the default for a domain, open **Settings** in the web app, or:
+By default, Mena-Lab picks `lam6-v1` for periodic structures and `lam5-v1` for molecules. You can override the default in Settings or from the CLI:
 
 ```bash
-mena models default crystal lam5-v1   # "auto" restores the recommended model (lam6-v1)
+mena models default crystal lam5-v1   # "auto" restores the default (lam6-v1)
 ```
 
-Each model carries its own learned energy reference offsets: compare relative/total energies computed with the same model and level of theory.
+Total energies are referenced per model and functional (level of theory), so always compare energies computed with the same model and functional. When registering custom checkpoints with `mena models add`, only load files you trust.
 
-`mena models add` loads a checkpoint file with PyTorch: add only files you trust.
+## Practical tips for SMILES and MD
+
+- Relax SMILES geometries first: a SMILES string generates one quick 3D force-field conformer, not a DFT minimum or conformer ensemble. Run `mena relax` before comparing energies or dipoles, and turn on "Relax first" (`--prerelax`) before starting MD from SMILES so initial steric strain does not heat up the trajectory.
+- Choosing an MD time step and thermostat: `1.0 fs` works well for relaxed organics around `300 K`; drop to `0.5 fs` above `500 K` or for stiff/strained geometries; use `2.0 fs` only for heavy-atom systems without hydrogen. The default Langevin friction (`0.01 /fs`, τ = 100 fs) is suited for production NVT; raising it to `0.05–0.1 /fs` helps damp initial strain during equilibration. Use NVE to check energy conservation.
+- Charge and spin multiplicity: formal charges and simple organic radicals (`[O-]`, `[NH4+]`, `[CH3]`) are inferred from SMILES, but set charge and spin multiplicity explicitly for diradicals (such as triplet O<sub>2</sub>), carbenes, or transition-metal complexes. Multi-fragment SMILES (`A.B`) are simulated in vacuum without a confining box.
+- Picking a model on molecules: keep Auto (`lam5-v1`) for the lowest energy/force errors and IR/Raman spectra; select `lam6-v1` explicitly on molecules if you want the HOMO–LUMO gap, unpaired-electron index, or steric overlap readout (`--explain`).
 
 ## Benchmarks
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/molecules-dark.svg">
-  <img alt="Mena-LAM-s on molecules: protein–ligand interaction error 0.297 kcal/mol on PLF547; 29,808 atoms per second and 2.69 GB peak GPU memory (1.28 GB low-memory) at 8,192 atoms on an Apple M3 Max laptop" src="docs/molecules-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/materials-dark.svg">
+  <img alt="Mena-LAM-6 on crystals and surfaces: Matbench Discovery CPS 0.874 in 48.5 GPU-h, 555 atoms/ms on RTX PRO 6000 (98.6 on M3 Max), DynaMat MD in 43.6 min and 0.46 GB VRAM" src="docs/materials-light.svg" width="100%">
 </picture>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/materials-dark.svg">
-  <img alt="Mena-LAM-6 on crystals and surfaces: CPS 0.874, 555.3 atoms/ms on RTX PRO 6000 (98.6 on M3 Max), DynaMat MD in 43.6 min and 0.46 GB VRAM" src="docs/materials-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/molecules-dark.svg">
+  <img alt="Mena-LAM-s on molecules: protein–ligand interaction error 0.297 kcal/mol on PLF547 vs. CCSD(T); laptop GPU scaling up to 16,384 atoms on an Apple M3 Max" src="docs/molecules-light.svg" width="100%">
 </picture>
 
-The web app's **Performance** tab shows detailed benchmarks and lets you run a live 3D simulation or scaling test on your own computer.
+Open the Performance tab in the web app for the full benchmark suite (including CPS vs. training compute, dense diamond scaling, and live speed/memory tests on your own hardware).
 
 ## License
 
@@ -103,4 +99,4 @@ Code: [Apache-2.0](LICENSE). Model weights: [CC BY 4.0](LICENSE-WEIGHTS). Third-
 
 ## Citation
 
-If you use Mena-Lab or any of the Mena-LAM weights in academic or industrial work, please cite this repository and name the model (`Mena-LAM-6`, `Mena-LAM-s`, or `Mena-LAM-preview`) and level of theory used (see `CITATION.cff`).
+If you use Mena-Lab or any of the Mena-LAM weights in your work, please cite this repository and specify the model (`Mena-LAM-6`, `Mena-LAM-s`, or `Mena-LAM-preview`) and level of theory used (see `CITATION.cff`).
