@@ -15,6 +15,8 @@ It ships three compact checkpoints (26–35 MB) that download automatically on f
 
 Everything runs on standard PyTorch with GPU acceleration on Apple Silicon and NVIDIA GPUs, and falls back cleanly to CPU without requiring a local CUDA compiler.
 
+![Mena-Lab local web UI: Caffeine vibrations and IR/Raman spectrum, followed by CsSnI3 perovskite phonon band structure](docs/demo.gif)
+
 ## Install
 
 ```bash
