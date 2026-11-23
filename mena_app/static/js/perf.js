@@ -82,7 +82,7 @@ function molScalingFigure(ts) {
         el('td', { class: 'num' + (oom ? ' oom-cell' : '') }, r.t1_gb),
         el('td', { class: 'num' }, r.t2_gb));
     })));
-  return figure(ts.title, ts.badge, el('div', { class: 'perf-tbl-wrap' }, tbl), ts);
+  return figure(ts.title, ts.badge, el('div', { class: 'perf-tbl-wrap' }, tbl), ts, 'wide-showcase');
 }
 
 function moleculesSection(b) {
@@ -138,10 +138,10 @@ function materialsSection(b) {
     el('div', { class: 'domain-head' },
       el('div', {},
         el('h3', { class: 'domain-title' }, 'Crystals & Surfaces — Mena-LAM-6 (lam6-v1) Leaderboard & Speed'),
-        el('p', { class: 'muted domain-desc' }, 'Crystals and surfaces run on Mena-LAM-6 (lam6-v1: Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182, WBM-257k in 4m 38s, DynaMat MD in 43.6 min / 0.46 GB VRAM) by default. Below are the Silicon speed, CPS vs. compute, DynaMat v1.0, DPA4 dense-diamond, and RTX PRO 6000 / Apple M3 Max scaling benchmarks.')),
+        el('p', { class: 'muted domain-desc' }, 'Default materials model (strict IEEE FP32): Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182, WBM-257k in 4m 38s, DynaMat MD in 43.6 min (0.46 GB VRAM).')),
       el('span', { class: 'domain-tag active' }, 'Default: Mena-LAM-6 (lam6-v1)')),
-    hardwareCallout(b.hardware_banner),
-    hero(b.headline));
+    hero(b.headline),
+    hardwareCallout(b.hardware_banner));
 
   const box = el('div', { class: 'pgrid' });
   const si = b.silicon_speed;
@@ -227,9 +227,11 @@ function materialsSection(b) {
   if (lam6SpeedFig) box.append(lam6SpeedFig);
   const lam6BenchFig = factsFigure(b.lam6_materials_benchmarks, 'wide-showcase');
   if (lam6BenchFig) box.append(lam6BenchFig);
+
+  const extra = [];
   const sc = b.showcase;
   if (sc && sc.facts) {
-    box.append(el('figure', { class: 'pfig showcase wide-showcase' },
+    extra.push(el('figure', { class: 'pfig showcase wide-showcase' },
       el('figcaption', { class: 'pfig-head' },
         el('span', { class: 'pfig-title' }, sc.title),
         el('span', { class: 'hw-badge' }, 'Apple M3 Max 36 GB')),
@@ -237,7 +239,12 @@ function materialsSection(b) {
       sc.note ? el('div', { class: 'pfig-src' }, el('p', {}, sc.note)) : null));
   }
   const t2p = factsFigure(b.materials_tier2_preview, 'wide-showcase');
-  if (t2p) box.append(t2p);
+  if (t2p) extra.push(t2p);
+  if (extra.length) {
+    box.append(el('details', { class: 'perf-more wide-showcase' },
+      el('summary', {}, 'Additional laptop & earlier-model benchmarks (CsSnI₃ 10k showcase, Mena-LAM-s on crystals)'),
+      el('div', { class: 'perf-more-body' }, ...extra)));
+  }
 
   sec.append(box);
   return sec;
@@ -267,15 +274,15 @@ export async function showPerf(openFull) {
       const callout = archStatusCallout(b.architecture_status);
       if (callout) statusBox.append(callout);
 
-      const molSec = moleculesSection(b);
       const matSec = materialsSection(b);
-      clear(pub).append(...[molSec, matSec].filter(Boolean));
+      const molSec = moleculesSection(b);
+      clear(pub).append(...[matSec, molSec].filter(Boolean));
 
-      let activeDomain = 'all';
+      let activeDomain = 'materials';
       const tabDefs = [
-        ['all', 'Both domains'],
+        ['materials', 'Materials (Mena-LAM-6)'],
         ['molecules', 'Molecules (Mena-LAM-s)'],
-        ['materials', 'Periodic Materials (Mena-LAM-6)'],
+        ['all', 'Both domains'],
       ];
       const syncDomain = () => {
         if (molSec) molSec.hidden = activeDomain === 'materials';
@@ -291,6 +298,7 @@ export async function showPerf(openFull) {
           onclick: () => { activeDomain = id; syncDomain(); },
         }, lbl));
       });
+      syncDomain();
     } catch (e) {
       clear(pub).append(el('div', { class: 'msg error' }, `Published numbers are not available: ${e.message}`));
       loaded = false;

@@ -127,6 +127,12 @@
 @media (max-width: 1000px) { .pgrid { grid-template-columns: 1fr; } }
 .pfig { margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .8rem 1rem .7rem; min-width: 0; }
 .pfig.wide-showcase { grid-column: 1 / -1; }
+.perf-more { grid-column: 1 / -1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .6rem .95rem; }
+.perf-more > summary { cursor: pointer; font-size: .84rem; font-weight: 600; color: var(--muted); list-style: none; display: flex; align-items: center; gap: .45rem; }
+.perf-more > summary::before { content: '▸'; font-size: .78rem; transition: transform .15s ease; }
+.perf-more[open] > summary::before { transform: rotate(90deg); }
+.perf-more > summary:hover { color: var(--text); }
+.perf-more-body { display: grid; gap: .85rem; margin-top: .75rem; }
 .pfig-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; flex-wrap: wrap; margin-bottom: .55rem; }
 .pfig-title { font-weight: 600; font-size: .92rem; }
 .hw-badge { font-family: var(--mono); font-size: .72rem; font-weight: 600; padding: .12rem .5rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); border: 1px solid var(--border); white-space: nowrap; }
