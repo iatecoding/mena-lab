@@ -11,7 +11,7 @@
    "status": "active",
    "badge": "Default for crystals and surfaces · Mena-LAM-6 (lam6-v1)",
    "title": "Periodic materials: Mena-LAM-6 (lam6-v1)",
-   "body": "Crystals and surfaces run on Mena-LAM-6 (lam6-v1, 34 MB) by default: Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182, with OC20/OC25/MAD-1.6 catalysis support and physics interpretation heads. Earlier Mena-LAM-preview (lam-400k: F1 0.905, CPS 0.849, DynaMat MD CMDS 0.787) and Mena-LAM-s (lam5-v1: 65,895 atoms/s at 8,000 silicon atoms and 53,616 atoms/s at 64,000 atoms in 3.7 GB on Apple M3 Max) can also be chosen in Settings."
+   "body": "Crystals and surfaces run on Mena-LAM-6 (lam6-v1, 34 MB, strict IEEE FP32) by default: Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182 (0/103 imaginary modes), WBM-257k in 4m 38s, DynaMat MD in 43.6 min (0.46 GB VRAM, #1 active speed), 555.3k atoms/s on RTX PRO 6000 (Si 32k) and 98.6k atoms/s on Apple M3 Max (Si 8k), plus OC20/OC25/MAD-1.6 catalysis support and physics interpretation heads. Earlier Mena-LAM-preview (lam-400k: F1 0.905, CPS 0.849, DynaMat MD CMDS 0.787) and Mena-LAM-s (lam5-v1: 65,895–130,348 atoms/s at 8,000 silicon atoms and 64,000 atoms in 3.7 GB on Apple M3 Max) can also be chosen in Settings."
   }
  },
  "molecules_lam5": {
@@ -225,43 +225,54 @@
   }
  },
  "hardware_banner": {
-  "title": "A100 & Apple M3 Max laptop vs. H100 / H200 / Blackwell / H20 data-center GPUs",
-  "dynamat": "On the official Matbench Discovery DynaMat v1.0 MD benchmark, Mena-LAM-preview ran on 1× NVIDIA A100 (40 GB, 1.56 TB/s bandwidth) at 24.7 atoms/ms (2.37 h total), while 44 of 45 competing models ran on newer H100, H200, or RTX PRO 6000 Blackwell GPUs (38 on H200 at 4.80 TB/s, 3 on H100 at 3.35 TB/s, 3 on Blackwell 96 GB). Despite running on A100, Mena-LAM-preview finished in 2.37 h (ORB v2 MPA on H200: 2.61 h; DPA-4.1-Air-OAM: 3.52 h) with 0.72 GB peak memory (DPA-4.1-Air-OAM: 1.33 GB; DPA-4.1-Max-OAM-PFT: 22.3 GB) and CMDS 0.787.",
-  "diamond": "DPA4 dense-diamond test (158 neighbours per atom at 6 Å; energy, forces and stress), measured on an Apple M3 Max laptop (36 GB, 300 GB/s): Mena-LAM-preview runs 13,927 atoms/s compiled (5,301 eager) and needs 1.3 MB/atom; Mena-LAM-s runs 42,902 atoms/s at 13,824 atoms and needs 0.14 MB/atom. Needed memory is the least GPU memory each run fits in when memory is limited; with memory free, the Metal allocator keeps freed blocks and the peak is higher (3.4 and 0.17 MB/atom). The other models were reported on an NVIDIA H20 96 GB server GPU (4,000 GB/s) in the DPA4 paper."
+  "title": "Mena-LAM-6 (lam6-v1) strict IEEE FP32 on RTX PRO 6000 & Apple M3 Max laptop vs. H100 / H200 / Blackwell / H20",
+  "mena_tag": "Mena-LAM-6 (lam6-v1): 1× RTX PRO 6000 / Apple M3 Max laptop (strict FP32)",
+  "other_tag": "Competitors: NVIDIA H100 / H200 / RTX PRO 6000 / H20 96 GB",
+  "dynamat": "On the official Matbench Discovery DynaMat v1.0 MD benchmark (17 crystals × 80,000 NVT steps = 210M atom-steps), Mena-LAM-6 (lam6-v1) ran in strict IEEE FP32 on 1× NVIDIA RTX PRO 6000 Blackwell in 0.726 h (43.6 min, 2,614 s) with 0.46 GB peak VRAM and CMDS 0.777 (CPS 0.874) — #1 fastest active model on the leaderboard (4.8× faster than DPA-4.1-Air-OAM at 3.52 h / 1.33 GB on the same RTX PRO 6000, and 3.6× faster than ORB v2 MPA at 2.61 h on H200). Earlier Mena-LAM-preview (lam-400k, A100: 2.37 h, 0.72 GB, CMDS 0.787) is retained in the charts for comparison.",
+  "diamond": "DPA4 dense-diamond test (158 neighbours per atom at 6 Å; energy, forces and stress), measured on an Apple M3 Max laptop (36 GB, 300 GB/s): Mena-LAM-6 (lam6-v1) runs 37,735 atoms/s (37.7 atoms/ms) at 32,768 atoms with 0.049 MB/atom live GPU memory (0.038 MB/atom low-memory; 37,244 atoms/s and 0.054 MB/atom at 13,824 atoms), while Mena-LAM-s (lam5-v1) runs 46,188 atoms/s at 32,768 atoms (0.052 MB/atom live). All competing models were reported on an NVIDIA H20 96 GB server GPU (4,000 GB/s) in the DPA4 paper."
  },
  "headline": [
   {
-   "value": "0.72",
+   "value": "0.46",
    "unit": "GB",
-   "badge": "1× A100 vs H200/Blackwell",
+   "badge": "DynaMat MD · #1 lowest VRAM",
    "label": "Peak memory, DynaMat MD",
-   "sub": "Next lowest reported: 1.33 GB (DPA-4.1-Air-OAM on RTX PRO 6000)"
+   "sub": "Mena-LAM-6 (lam6-v1) on RTX PRO 6000; 2.9× lower than DPA-4.1-Air-OAM (1.33 GB) & 49× lower than DPA-4.1-Max (22.3 GB)"
   },
   {
-   "value": "2.37",
-   "unit": "h",
-   "badge": "24.7 atoms/ms on 1× A100",
+   "value": "43.6",
+   "unit": "min",
+   "badge": "2,614 s · #1 active MBD speed",
    "label": "DynaMat MD wall time",
-   "sub": "On an A100; ORB v2 MPA 2.61 h on H200, DPA-4.1-Air-OAM 3.52 h"
+   "sub": "0.726 h on 1× RTX PRO 6000 (strict FP32); 4.8× faster than DPA-4.1-Air-OAM (3.52 h), 3.6× faster than ORB v2 (2.61 h on H200)"
   },
   {
-   "value": "0.787",
+   "value": "0.874",
    "unit": "",
-   "badge": "DynaMat v1.0",
-   "label": "DynaMat CMDS & 0.849 CPS",
-   "sub": "DPA-4.1-Air-OAM: 0.776; CPS 0.849 after 30 GPU-hours of training"
+   "badge": "Matbench Discovery · 48.5 GPU-h",
+   "label": "CPS (F1 0.904 · κ_SRME 0.182)",
+   "sub": "WBM-257k relaxed in 4m 38s (924 cryst/s); 0/103 imaginary phonons; CMDS 0.777 (#2 active), CDS 0.761"
   },
   {
-   "value": "13,927",
+   "value": "555.3k",
    "unit": "atoms/s",
-   "badge": "M3 Max laptop · dense diamond",
-   "label": "Dense diamond (158 nbr/atom)",
-   "sub": "Compiled, energy+forces+stress, needs 1.3 MB/atom; Mena-LAM-s: 42,902 atoms/s at 0.14 MB/atom"
+   "badge": "RTX PRO 6000 · Si 32k (FP32)",
+   "label": "Peak crystal MD throughput",
+   "sub": "555.3 atoms/ms in 0.35 GB (405.7k at/s at 314k atoms); 98.6k at/s (Si 8k) & 37.7k at/s (diamond 32k) on M3 Max"
   }
  ],
  "dynamat": {
-  "title": "Peak GPU memory in DynaMat MD (Mena-LAM-preview on A100 vs. H100/H200/Blackwell)",
+  "title": "Peak GPU memory in DynaMat MD (Mena-LAM-6 on RTX PRO 6000 vs. H100/H200/Blackwell)",
   "rows": [
+   {
+    "name": "Mena-LAM-6",
+    "mem_gb": 0.456,
+    "hours": 0.726,
+    "cmds": 0.777,
+    "gpu": "RTX PRO 6000",
+    "cps": 0.8739,
+    "mena": true
+   },
    {
     "name": "Mena-LAM-preview",
     "mem_gb": 0.716,
@@ -677,20 +688,30 @@
     "mena": false
    }
   ],
-  "source": "Matbench Discovery DynaMat v1.0 leaderboard (17 crystals, 20 ps each = 210M atom-steps, incl. DPA-4.1 PR #404); peak VRAM on the 500-atom cell.",
-  "note": "Mena-LAM-preview ran on 1× A100 (40 GB, 1.56 TB/s, 24.7 atoms/ms); 44 of 45 competitors ran on H100/H200/RTX PRO 6000 Blackwell. Each bar and point shows the model's GPU."
+  "source": "Matbench Discovery DynaMat v1.0 leaderboard (17 crystals, 20 ps each = 210M atom-steps, incl. DPA-4.1 PR #404) & Mena-LAM-6 RTX PRO 6000 strict-FP32 run (2026-11-22); peak VRAM on the 500-atom cell.",
+  "note": "Mena-LAM-6 (lam6-v1) ran in strict IEEE FP32 on 1× RTX PRO 6000 Blackwell in 0.726 h (2,613.9 s, #1 active MBD speed) with 0.456 GB peak VRAM and CMDS 0.7770 (CPS 0.8739). Earlier Mena-LAM-preview (lam-400k) ran on 1× A100 (2.37 h, 0.72 GB, CMDS 0.7869). Each bar and point shows the model's GPU."
  },
  "diamond": {
   "title": "Memory per atom on dense diamond (158 neighbours/atom, 6 Å)",
   "rows": [
    {
+    "name": "Mena-LAM-6",
+    "mb_per_atom": 0.049,
+    "atoms_per_ms": 37.7,
+    "atoms_per_s": 37735,
+    "cps": 0.8739,
+    "gpu": "M3 Max",
+    "hardware": "Apple M3 Max 36 GB laptop (300 GB/s), fused Metal FP32, 32,768 atoms; 0.049 MB/atom live GPU memory (0.038 MB/atom low-memory; 0.103 MB/atom uncapped driver)",
+    "mena": true
+   },
+   {
     "name": "Mena-LAM-s",
-    "mb_per_atom": 0.14,
-    "atoms_per_ms": 42.9,
-    "atoms_per_s": 42902,
+    "mb_per_atom": 0.052,
+    "atoms_per_ms": 46.2,
+    "atoms_per_s": 46188,
     "cps": null,
     "gpu": "M3 Max",
-    "hardware": "Apple M3 Max 36 GB laptop (300 GB/s), compiled, 13,824 atoms; needed GPU memory (0.17 MB/atom cached when memory is free)",
+    "hardware": "Apple M3 Max 36 GB laptop (300 GB/s), fused Metal FP32, 32,768 atoms; 0.052 MB/atom live GPU memory (0.102 MB/atom uncapped driver)",
     "mena": true
    },
    {
@@ -904,8 +925,264 @@
     "mena": false
    }
   ],
-  "source": "Other models: DPA4 paper (arXiv:2606.02419) Fig. 1c & Table S-17 on an NVIDIA H20 96 GB (4,000 GB/s). Mena-LAM-preview: measured on this Apple M3 Max laptop (36 GB, 300 GB/s) with the same 6 Å diamond structure and E+F+S protocol.",
-  "note": "Mena rows measured on an Apple M3 Max on 2026-11-12. Memory is what the run needs: the least GPU memory it fits in when the Metal allocator is limited (about 5-10% slower); with memory free the allocator caches more. The other rows are the DPA4 paper's H20 96 GB numbers. Mena-LAM-s has no CPS here (it is not the crystal default)."
+  "source": "Other models: DPA4 paper (arXiv:2606.02419) Fig. 1c & Table S-17 on an NVIDIA H20 96 GB (4,000 GB/s). Mena-LAM-6, Mena-LAM-s & Mena-LAM-preview: measured on an Apple M3 Max laptop (36 GB, 300 GB/s) with the same 6 Å diamond structure and E+F+S protocol.",
+  "note": "Mena-LAM-6 & Mena-LAM-s measured on Apple M3 Max (2026-11-22, 32,768 atoms, fused Metal FP32: 0.049 and 0.052 MB/atom live GPU memory; 0.038 MB/atom low-memory for Mena-LAM-6). Mena-LAM-preview measured at 4,096 atoms (1.27 MB/atom). Other rows are DPA4 paper H20 96 GB numbers. Mena-LAM-s has no CPS here (it is the molecular default)."
+ },
+ "silicon_speed": {
+  "title": "Silicon speed (E+F+Stress, <z>=46): Mena-LAM-6 vs. published MLIPs",
+  "badge": "Strict IEEE FP32 vs. 80–96 GB DC GPUs",
+  "rows": [
+   {
+    "name": "Mena-LAM-6 · RTX PRO 6000 (FP32, 32k)",
+    "atoms_per_ms": 555.3,
+    "mena": true,
+    "detail": "555.3 atoms/ms (555,300 at/s) in strict IEEE FP32, 0.35 GB live VRAM"
+   },
+   {
+    "name": "FACTO-S · DC GPU (BF16×3, 8k)",
+    "atoms_per_ms": 429.5,
+    "mena": false,
+    "detail": "429.5 atoms/ms on 80–96 GB datacenter GPU (BF16×3, FACTO Table 1)"
+   },
+   {
+    "name": "FACTO-M · DC GPU (BF16×3, 8k)",
+    "atoms_per_ms": 314.6,
+    "mena": false,
+    "detail": "314.6 atoms/ms on 80–96 GB datacenter GPU (BF16×3)"
+   },
+   {
+    "name": "FACTO-L · DC GPU (BF16×3, 8k)",
+    "atoms_per_ms": 114.4,
+    "mena": false,
+    "detail": "114.4 atoms/ms on 80–96 GB datacenter GPU (BF16×3)"
+   },
+   {
+    "name": "Mena-LAM-6 · M3 Max laptop (FP32, 8k)",
+    "atoms_per_ms": 98.6,
+    "mena": true,
+    "detail": "98.6 atoms/ms (98,646 at/s) on Apple M3 Max laptop in strict IEEE FP32"
+   },
+   {
+    "name": "NequIP-OAM-L · DC GPU (FP32, 8k)",
+    "atoms_per_ms": 55.2,
+    "mena": false,
+    "detail": "55.2 atoms/ms on 80–96 GB datacenter GPU (FP32)"
+   },
+   {
+    "name": "FACTO-XL · DC GPU (BF16×3, 8k)",
+    "atoms_per_ms": 54.9,
+    "mena": false,
+    "detail": "54.9 atoms/ms on 80–96 GB datacenter GPU (BF16×3)"
+   },
+   {
+    "name": "MACE-MPA-0 · DC GPU (FP32, 8k)",
+    "atoms_per_ms": 41.8,
+    "mena": false,
+    "detail": "41.8 atoms/ms on 80–96 GB datacenter GPU (FP32)"
+   },
+   {
+    "name": "GRACE-2L · DC GPU (FP32, 8k)",
+    "atoms_per_ms": 23.4,
+    "mena": false,
+    "detail": "23.4 atoms/ms on 80–96 GB datacenter GPU (FP32)"
+   },
+   {
+    "name": "ORB v3 · DC GPU (FP32, 8k)",
+    "atoms_per_ms": 15.5,
+    "mena": false,
+    "detail": "15.5 atoms/ms on 80–96 GB datacenter GPU (FP32)"
+   },
+   {
+    "name": "GRACE-3L · DC GPU (FP32, 8k)",
+    "atoms_per_ms": 10.5,
+    "mena": false,
+    "detail": "10.5 atoms/ms on 80–96 GB datacenter GPU (FP32)"
+   },
+   {
+    "name": "TACE-L · DC GPU (FP32, 8k)",
+    "atoms_per_ms": 8.7,
+    "mena": false,
+    "detail": "8.7 atoms/ms on 80–96 GB datacenter GPU (FP32)"
+   }
+  ],
+  "note": "Higher is better. EqV3, eSEN, and Prophet run out of memory at 8,000 atoms on 80–96 GB GPUs (1.8–1.9 at/ms at 1k). Mena-LAM-6 runs in strict IEEE FP32 (allow_tf32=False, zero BF16/FP16) on both RTX PRO 6000 and an Apple M3 Max laptop.",
+  "source": "Mena-LAM-6 measured 2026-11-22 (E+F+S, <z>=46); published baselines from FACTO Table 1 on 80–96 GB datacenter GPUs."
+ },
+ "cps_vs_compute": {
+  "title": "Matbench Discovery accuracy (CPS) vs. training compute (GPU-hours)",
+  "badge": "48.5 GPU-h single-GPU Pareto knee",
+  "rows": [
+   { "name": "Mena-LAM-6", "gpu_h": 48.5, "cps": 0.8739, "mena": true, "scope": "7.98M multi-domain (1× RTX PRO 6000)" },
+   { "name": "Mena-LAM-preview", "gpu_h": 30.5, "cps": 0.8491, "mena": true, "scope": "6.37M multi-domain (1× A100)" },
+   { "name": "DPA-4.1-Max", "gpu_h": 3558.0, "cps": 0.913, "mena": false, "scope": "99M OAM crystals + PFT" },
+   { "name": "Prophet", "gpu_h": 17670.0, "cps": 0.9116, "mena": false, "scope": "62M OAM crystals" },
+   { "name": "EquFlashV2", "gpu_h": 1600.0, "cps": 0.9072, "mena": false, "scope": "45M OAM crystals" },
+   { "name": "EqV3-OAM", "gpu_h": 5674.0, "cps": 0.9023, "mena": false, "scope": "30M OAM crystals" },
+   { "name": "GRACE-3L", "gpu_h": 1984.0, "cps": 0.8999, "mena": false, "scope": "42M OAM crystals" },
+   { "name": "PET-XL", "gpu_h": 20480.0, "cps": 0.8985, "mena": false, "scope": "OAM crystals" },
+   { "name": "DPA-4.1-Air", "gpu_h": 227.6, "cps": 0.8932, "mena": false, "scope": "5.2M OAM crystals" },
+   { "name": "TACE-L", "gpu_h": 840.0, "cps": 0.8893, "mena": false, "scope": "OAM crystals" },
+   { "name": "UMA-M-1.1", "gpu_h": 129024.0, "cps": 0.889, "mena": false, "scope": "1.4B multi-domain" },
+   { "name": "UMA-S-1.1", "gpu_h": 46080.0, "cps": 0.878, "mena": false, "scope": "150M multi-domain" },
+   { "name": "SevenNet-Omni", "gpu_h": 6400.0, "cps": 0.8735, "mena": false, "scope": "55M multi-domain" },
+   { "name": "MACE-SOYO-OAM", "gpu_h": 350.0, "cps": 0.8735, "mena": false, "scope": "OAM crystals" },
+   { "name": "NequIP-OAM-L", "gpu_h": 400.0, "cps": 0.8702, "mena": false, "scope": "9.6M OAM crystals" },
+   { "name": "TACE-M", "gpu_h": 960.0, "cps": 0.8665, "mena": false, "scope": "OAM crystals" },
+   { "name": "ORB v3", "gpu_h": 1000.0, "cps": 0.8606, "mena": false, "scope": "25.5M OAM crystals" },
+   { "name": "Allegro-OAM-L", "gpu_h": 1200.0, "cps": 0.8404, "mena": false, "scope": "OAM crystals" },
+   { "name": "DPA-4-Pro-MP", "gpu_h": 2160.0, "cps": 0.8404, "mena": false, "scope": "MPtrj" },
+   { "name": "EqV3-MP", "gpu_h": 1070.0, "cps": 0.8297, "mena": false, "scope": "MPtrj" },
+   { "name": "MatRIS-10M", "gpu_h": 5440.0, "cps": 0.7779, "mena": false, "scope": "MPtrj" },
+   { "name": "MACE-SOYO-MP", "gpu_h": 120.0, "cps": 0.7631, "mena": false, "scope": "MPtrj" },
+   { "name": "Eqnorm-MP", "gpu_h": 2000.0, "cps": 0.7556, "mena": false, "scope": "MPtrj" },
+   { "name": "Nequix-PFT", "gpu_h": 140.0, "cps": 0.7549, "mena": false, "scope": "0.7M MPtrj" },
+   { "name": "NequIP-MP-L", "gpu_h": 288.0, "cps": 0.7303, "mena": false, "scope": "MPtrj" },
+   { "name": "DPA-4.1C-Air", "gpu_h": 19.81, "cps": 0.7255, "mena": false, "scope": "0.4M 1-hop OAM" },
+   { "name": "Allegro-MP-L", "gpu_h": 400.0, "cps": 0.7203, "mena": false, "scope": "MPtrj" },
+   { "name": "HIENet", "gpu_h": 2888.0, "cps": 0.707, "mena": false, "scope": "MPtrj" }
+  ],
+  "note": "Up and to the left is better (higher CPS, fewer training GPU-hours). Mena-LAM-6 reaches CPS 0.8739 in 48.5 single-GPU hours while matching 350–6,400 GPU-h models and sitting on the single-GPU Pareto knee.",
+  "source": "Matbench Discovery leaderboard & published model cards (reported GPU-hours, not rescaled across GPU generations)."
+ },
+ "lam6_materials_benchmarks": {
+  "title": "Mena-LAM-6 (lam6-v1): 5-Pillar Matbench Discovery & Solid-State Benchmarks",
+  "badge": "CPS 0.874 · 48.5 GPU-h · strict IEEE FP32",
+  "facts": {
+   "Combined Performance (CPS)": "0.8739 (48.5 GPU-h on 1× RTX PRO 6000; #16 overall, matches SevenNet-Omni & MACE-SOYO-OAM, beats NequIP-OAM-L 0.870 & ORB v3 0.861)",
+   "Discovery (WBM-257k, uniq.)": "F1 = 0.9037, MAE = 20.56 meV/atom, DAF = 5.937, 0/256,963 fails (all 256,963 relaxed in 278.2 s = 923.6 cryst/s, 2.26 GB VRAM)",
+   "Phonons (PhononDB-103)": "κ_SRME = 0.1824 (−40.5% vs. lam-400k), 0/103 imaginary modes, spectrum w1 = 0.1153 THz",
+   "Geometry Optimization": "RMSD = 0.0623 Å, 81.89% symmetry match (moyopy symprec=1e-2; 69.17% at 1e-5)",
+   "DynaMat MD (CMDS, 17×80k)": "CMDS = 0.7770 (#2 active) in 2,613.9 s (43.6 min, #1 active speed), 0.456 GB peak VRAM",
+   "Diatomics (CDS, 92×119)": "CDS = 0.7606 (+0.244 vs. lam-400k) in 21.1 s (518.6 calls/s, 0.199 GB VRAM), 80/81 vib freq",
+   "MDR-442 & X23 crystals": "MDR-442 Hessian col.rel = 0.044 (−58% vs. lam-400k); X23 = 7.69 kJ/mol (ML-PEG 0.9231)",
+   "STFC ML-PEG #1 suites": "Relastab 0.9750, Li-diffusion NEB 0.9635, bulk-metal E(V) 0.9287, 3dTMV 0.8017"
+  },
+  "note": "Single 7.98M-param checkpoint evaluated in strict IEEE FP32 (allow_tf32=False, zero BF16/FP16) with lot='mp' + MP2020 +U, validated in upstream matbench-discovery.",
+  "source": "Matbench Discovery 5-task evaluation (2026-11-20 & 2026-11-22 RTX PRO 6000), MDR-442, X23, and STFC ML-PEG."
+ },
+ "lam6_speed_scaling": {
+  "title": "Mena-LAM-6 (lam6-v1) crystal speed & memory scaling (strict IEEE FP32 & CPU FP64)",
+  "badge": "555.3k at/s RTX PRO 6000 · 98.6k at/s M3 Max",
+  "columns": [
+   "Hardware",
+   "Workload (E+F+Stress)",
+   "Atoms",
+   "Latency",
+   "Throughput",
+   "Memory"
+  ],
+  "rows": [
+   {
+    "hw": "RTX PRO 6000",
+    "workload": "Si MD (compiled + CUDA graph)",
+    "n": 512,
+    "latency": "2.20 ms",
+    "atoms_per_s": 232800,
+    "mem": "0.13 GB",
+    "highlight": false
+   },
+   {
+    "hw": "RTX PRO 6000",
+    "workload": "Si MD (compiled + CUDA graph)",
+    "n": 4096,
+    "latency": "7.48 ms",
+    "atoms_per_s": 547300,
+    "mem": "0.15 GB (0.035 MB/at)",
+    "highlight": false
+   },
+   {
+    "hw": "RTX PRO 6000",
+    "workload": "Si MD (CUDA graph, peak)",
+    "n": 32768,
+    "latency": "59.01 ms",
+    "atoms_per_s": 555300,
+    "mem": "0.35 GB (0.010 MB/at)",
+    "highlight": true
+   },
+   {
+    "hw": "RTX PRO 6000",
+    "workload": "Si MD (CUDA graph)",
+    "n": 64000,
+    "latency": "119.8 ms",
+    "atoms_per_s": 534300,
+    "mem": "0.49 GB (0.007 MB/at)",
+    "highlight": false
+   },
+   {
+    "hw": "RTX PRO 6000",
+    "workload": "Si MD (CUDA graph)",
+    "n": 125000,
+    "latency": "284.6 ms",
+    "atoms_per_s": 439200,
+    "mem": "0.76 GB (0.006 MB/at)",
+    "highlight": false
+   },
+   {
+    "hw": "RTX PRO 6000",
+    "workload": "Si calc (14.4M edges)",
+    "n": 314432,
+    "latency": "775.0 ms",
+    "atoms_per_s": 405700,
+    "mem": "12.21 GB (0.037 MB/at)",
+    "highlight": true
+   },
+   {
+    "hw": "M3 Max GPU",
+    "workload": "Si (compiled Metal FP32)",
+    "n": 8000,
+    "latency": "81.1 ms",
+    "atoms_per_s": 98646,
+    "mem": "2.34 GB driver",
+    "highlight": false
+   },
+   {
+    "hw": "M3 Max GPU",
+    "workload": "SrTiO₃ (compiled Metal FP32)",
+    "n": 5000,
+    "latency": "59.1 ms",
+    "atoms_per_s": 84595,
+    "mem": "1.29 GB driver",
+    "highlight": false
+   },
+   {
+    "hw": "M3 Max GPU",
+    "workload": "Dense diamond (158 nbr/at)",
+    "n": 32768,
+    "latency": "868.4 ms",
+    "atoms_per_s": 37735,
+    "mem": "1.60 GB live (0.049 MB/at)",
+    "highlight": false
+   },
+   {
+    "hw": "M3 Max GPU",
+    "workload": "Si supercell (fused eager)",
+    "n": 64000,
+    "latency": "1,347.6 ms",
+    "atoms_per_s": 47491,
+    "mem": "2.66 GB live (0.042 MB/at)",
+    "highlight": false
+   },
+   {
+    "hw": "M3 Max CPU",
+    "workload": "Si (10 P-cores, compiled FP32)",
+    "n": 1000,
+    "latency": "75.4 ms",
+    "atoms_per_s": 13262,
+    "mem": "OpenMP Dual-CSR",
+    "highlight": false
+   },
+   {
+    "hw": "M3 Max CPU",
+    "workload": "SrTiO₃ (10 P-cores, exact FP64)",
+    "n": 625,
+    "latency": "103.8 ms",
+    "atoms_per_s": 6023,
+    "mem": "Exact IEEE FP64",
+    "highlight": false
+   }
+  ],
+  "note": "Dual-CSR register-streaming kernels (CUDA C++, Apple Metal, OpenMP C++) eliminate [E, C] edge buffers (O(N) live memory). On RTX PRO 6000, lam6-v1 beats FACTO-OAM-S (429.5k at/s in BF16×3) by 1.29× in strict IEEE FP32.",
+  "source": "Measured 2026-11-22 on NVIDIA RTX PRO 6000 Blackwell (96 GB, CUDA 13.0) and Apple M3 Max (36 GB, 40-core GPU / 10 P-cores)."
  },
  "showcase": {
   "title": "10,000-atom CsSnI₃ perovskite on an Apple M3 Max laptop",

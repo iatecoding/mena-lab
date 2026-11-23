@@ -92,16 +92,31 @@ export function scatter(host, { points, x_label, y_label, x_unit = '' }) {
       dots.append(g);
     });
     order.forEach(p => {
-      const px = X(p.x), py = Y(p.y), fs = p.mena ? 12.5 : 10.2, w = textW(p.name, fs), h = fs + 2;
-      const tries = [[px + 8, py + 4], [px - 8 - w, py + 4], [px - w / 2, py - 9], [px - w / 2, py + fs + 7]];
+      const px = X(p.x), py = Y(p.y), fs = p.mena ? 12.0 : 10.2, w = textW(p.name, fs), h = fs + 2;
+      const clampX = x => Math.max(m.l + 2, Math.min(W - m.r - w - 2, x));
+      const tries = [
+        [px + 8, py + 4],
+        [px - 8 - w, py + 4],
+        [px + 8, py + fs + 6],
+        [px + 8, py - 9],
+        [clampX(px - w / 2), py - 9],
+        [clampX(px - w / 2), py + fs + 7],
+      ];
+      let didPlace = false;
       for (const [tx, ty] of tries) {
         const box = { x: tx - 2, y: ty - h + 2, w: w + 4, h };
-        if (box.x < m.l || box.x + box.w > W - m.r + 6 || box.y < 0 || box.y + box.h > H - m.b) continue;
+        if (box.x < m.l || box.x + box.w > W - m.r + 6 || box.y < 2 || box.y + box.h > H - m.b) continue;
         if (placed.some(q => box.x < q.x + q.w && q.x < box.x + box.w && box.y < q.y + q.h && q.y < box.y + box.h)) continue;
         if (points.some(q => q !== p && Math.abs(X(q.x) - (box.x + box.w / 2)) < box.w / 2 && Math.abs(Y(q.y) - (box.y + box.h / 2)) < box.h / 2 + 2)) continue;
         placed.push(box);
         labels.append(s('text', { x: tx, y: ty, class: p.mena ? 'dlabel mena' : 'dlabel' }, p.name));
+        didPlace = true;
         break;
+      }
+      if (!didPlace && p.mena) {
+        const tx = clampX(px + 8), ty = Math.max(h + 2, Math.min(H - m.b - 4, py + 4));
+        placed.push({ x: tx - 2, y: ty - h + 2, w: w + 4, h });
+        labels.append(s('text', { x: tx, y: ty, class: 'dlabel mena' }, p.name));
       }
     });
     svg.append(dots, labels);

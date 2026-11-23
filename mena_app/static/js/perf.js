@@ -24,7 +24,7 @@ function figure(title, subBadge, body, src = {}, extraClass = '') {
 function factsFigure(sec, extraClass = '') {
   if (!sec || !sec.facts) return null;
   const dl = el('dl', { class: 'facts showcase-facts' },
-    Object.entries(sec.facts).flatMap(([k, v]) => [el('dt', {}, k), el('dd', { class: 'num' }, String(v))]));
+    Object.entries(sec.facts).map(([k, v]) => el('div', { class: 'fact-pair' }, el('dt', {}, k), el('dd', { class: 'num' }, String(v)))));
   return figure(sec.title, sec.badge || 'Apple M3 Max 36 GB', dl, { note: sec.note, source: sec.source }, ('showcase ' + extraClass).trim());
 }
 
@@ -48,11 +48,11 @@ function hardwareCallout(hb) {
   if (!hb) return null;
   return el('div', { class: 'hw-banner', role: 'region', 'aria-label': 'Hardware comparison context' },
     el('div', { class: 'hw-banner-title' },
-      el('span', { class: 'hw-tag mena' }, 'Mena-LAM-preview (lam-400k): 1× A100 / Apple M3 Max laptop'),
+      el('span', { class: 'hw-tag mena' }, hb.mena_tag || 'Mena-LAM-6 (lam6-v1): 1× RTX PRO 6000 / Apple M3 Max laptop (strict FP32)'),
       el('span', { class: 'hw-vs' }, 'vs.'),
-      el('span', { class: 'hw-tag other' }, 'Competitors: NVIDIA H100 / H200 / H20 96 GB')),
+      el('span', { class: 'hw-tag other' }, hb.other_tag || 'Competitors: NVIDIA H100 / H200 / RTX PRO 6000 / H20 96 GB')),
     el('div', { class: 'hw-banner-grid' },
-      el('p', {}, el('strong', {}, 'Matbench Discovery DynaMat MD (A100 vs. H100/H200): '), hb.dynamat),
+      el('p', {}, el('strong', {}, 'Matbench Discovery DynaMat MD (RTX PRO 6000 vs. H100/H200/Blackwell): '), hb.dynamat),
       el('p', {}, el('strong', {}, 'Dense Diamond 158 nbr/atom (M3 Max laptop vs. H20 96 GB): '), hb.diamond)));
 }
 
@@ -118,17 +118,57 @@ function moleculesSection(b) {
   return sec;
 }
 
+function lam6SpeedFigure(sec) {
+  if (!sec || !sec.rows) return null;
+  const cols = sec.columns || ['Hardware', 'Workload (E+F+Stress)', 'Atoms', 'Latency', 'Throughput', 'Memory'];
+  const tbl = el('table', { class: 'tbl perf-tbl' },
+    el('thead', {}, el('tr', {}, cols.map(c => el('th', { scope: 'col' }, c)))),
+    el('tbody', {}, sec.rows.map(r => el('tr', { class: r.highlight ? 'perf-highlight-row' : '' },
+      el('td', { class: 'strong-cell' }, r.hw),
+      el('td', {}, r.workload),
+      el('td', { class: 'num' }, r.n.toLocaleString('en-US')),
+      el('td', { class: 'num' }, r.latency),
+      el('td', { class: 'num accent-cell' }, `${r.atoms_per_s.toLocaleString('en-US')} at/s`),
+      el('td', { class: 'num' }, r.mem)))));
+  return figure(sec.title, sec.badge, el('div', { class: 'perf-tbl-wrap' }, tbl), sec, 'wide-showcase');
+}
+
 function materialsSection(b) {
   const sec = el('section', { class: 'domain-section', 'aria-label': 'Periodic materials benchmarks' },
     el('div', { class: 'domain-head' },
       el('div', {},
-        el('h3', { class: 'domain-title' }, 'Crystals & Surfaces — Mena-LAM-6 (default) & Published Benchmarks'),
-        el('p', { class: 'muted domain-desc' }, 'Crystals and surfaces run on Mena-LAM-6 (lam6-v1: Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182) by default. Below are the published DynaMat v1.0 and DPA4 dense-diamond comparisons for Mena-LAM-preview (lam-400k) and large-crystal scaling for Mena-LAM-s.')),
+        el('h3', { class: 'domain-title' }, 'Crystals & Surfaces — Mena-LAM-6 (lam6-v1) Leaderboard & Speed'),
+        el('p', { class: 'muted domain-desc' }, 'Crystals and surfaces run on Mena-LAM-6 (lam6-v1: Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182, WBM-257k in 4m 38s, DynaMat MD in 43.6 min / 0.46 GB VRAM) by default. Below are the Silicon speed, CPS vs. compute, DynaMat v1.0, DPA4 dense-diamond, and RTX PRO 6000 / Apple M3 Max scaling benchmarks.')),
       el('span', { class: 'domain-tag active' }, 'Default: Mena-LAM-6 (lam6-v1)')),
     hardwareCallout(b.hardware_banner),
     hero(b.headline));
 
   const box = el('div', { class: 'pgrid' });
+  const si = b.silicon_speed;
+  if (si && si.rows) {
+    const siRows = si.rows.map(r => ({
+      label: r.name,
+      value: r.atoms_per_ms,
+      mena: r.mena,
+      title: `${r.name}: ${r.detail || (r.atoms_per_ms + ' atoms/ms')}`,
+    }));
+    const figSi = el('div');
+    box.append(figure(si.title, si.badge, figSi, si));
+    if (siRows.length) hbars(figSi, { rows: siRows, unit: 'at/ms', x_label: 'throughput (atoms/ms, log scale, higher is better)', digits: 1 });
+  }
+  const cc = b.cps_vs_compute;
+  if (cc && cc.rows) {
+    const ccPts = cc.rows.map(r => ({
+      name: r.name,
+      x: r.gpu_h,
+      y: r.cps,
+      mena: r.mena,
+      title: `${r.name}: CPS ${r.cps}, ${r.gpu_h.toLocaleString('en-US')} GPU-h (${r.scope})`,
+    }));
+    const figCc = el('div');
+    box.append(figure(cc.title, cc.badge, figCc, cc));
+    if (ccPts.length) scatter(figCc, { points: ccPts, x_label: 'training compute (GPU-hours, log scale, lower is better)', y_label: 'Matbench Discovery CPS (higher is better)', x_unit: 'h' });
+  }
   const dm = b.dynamat;
   if (dm && dm.rows) {
     const memRows = dm.rows.filter(r => r.mem_gb != null).sort((a, c) => a.mem_gb - c.mem_gb)
@@ -139,7 +179,7 @@ function materialsSection(b) {
         title: `${r.name} (${r.gpu}): ${r.mem_gb} GB peak memory, ${r.hours} h, CMDS ${r.cmds}`,
       }));
     const fig1 = el('div');
-    box.append(figure(dm.title || 'Peak GPU memory in DynaMat MD', 'Mena: A100 · Others: H100/H200', fig1, dm));
+    box.append(figure(dm.title || 'Peak GPU memory in DynaMat MD', 'Mena-LAM-6: RTX PRO 6000 · Others: H100/H200/Blackwell', fig1, dm));
     if (memRows.length) hbars(fig1, { rows: memRows, unit: 'GB', x_label: 'peak GPU memory (GB, log scale, lower is better)' });
 
     const pts = dm.rows.filter(r => r.hours != null && r.cmds != null)
@@ -151,7 +191,7 @@ function materialsSection(b) {
         title: `${r.name} on ${r.gpu}: ${r.hours} h, CMDS ${r.cmds}${r.cps ? `, CPS ${r.cps}` : ''}`,
       }));
     const fig2 = el('div');
-    box.append(figure('Speed vs. accuracy (CMDS) in DynaMat MD', '1× A100 beats 41 H100/H200s', fig2,
+    box.append(figure('Speed vs. accuracy (CMDS) in DynaMat MD', '#1 active speed · 43.6 min (strict FP32)', fig2,
       { note: dm.note, source: dm.source + ' Up and to the left is better (faster on x, more accurate on y).' }));
     if (pts.length) scatter(fig2, { points: pts, x_label: 'MD wall time (hours, log scale, lower is better)', y_label: 'CMDS (higher is better)', x_unit: ' h' });
   }
@@ -165,7 +205,7 @@ function materialsSection(b) {
         title: `${r.name} (${r.hardware}): ${r.mb_per_atom} MB/atom${r.atoms_per_ms != null ? `, ${r.atoms_per_ms} atoms/ms (${Math.round(r.atoms_per_ms * 1000).toLocaleString('en-US')} atoms/s)` : ''}`,
       }));
     const fig3 = el('div');
-    box.append(figure(di.title || 'Memory per atom, dense diamond', 'Mena: M3 Max · Others: H20 96GB', fig3, di));
+    box.append(figure(di.title || 'Memory per atom, dense diamond', 'Mena-LAM-6: M3 Max · Others: H20 96GB', fig3, di));
     if (rows.length) hbars(fig3, { rows, unit: 'MB', x_label: 'memory per atom (MB, log scale, lower is better)' });
 
     const dPts = di.rows.filter(r => r.atoms_per_ms != null && r.cps != null)
@@ -178,18 +218,22 @@ function materialsSection(b) {
       }));
     const fig4 = el('div');
     box.append(figure('Discovery accuracy (CPS) vs. speed on dense diamond (158 nbr/atom)', 'M3 Max laptop (300 GB/s) vs. H20 (4,000 GB/s)', fig4, {
-      note: (di.rows.filter(r => r.mena && r.cps != null).map(r => `${r.name} (${r.atoms_per_ms} atoms/ms = ${r.atoms_per_s.toLocaleString('en-US')} atoms/s, CPS ${r.cps})`).join('; ') || 'Mena') + ' is measured on an Apple M3 Max laptop; all other models ran on an NVIDIA H20 96 GB server GPU (DPA4 Fig. 1c / Table S-17).',
+      note: (di.rows.filter(r => r.mena && r.cps != null).map(r => `${r.name} (${r.atoms_per_ms} atoms/ms = ${r.atoms_per_s.toLocaleString('en-US')} atoms/s, CPS ${r.cps})`).join('; ') || 'Mena') + ' measured on an Apple M3 Max laptop; all other models ran on an NVIDIA H20 96 GB server GPU (DPA4 Fig. 1c / Table S-17).',
       source: 'Matbench Discovery CPS vs. saturated diamond E+F+S throughput (1 atom/ms = 1,000 atoms/s). Up and to the right is better.',
     }));
     if (dPts.length) scatter(fig4, { points: dPts, x_label: 'saturated throughput (atoms/ms, log scale, higher is better; 10 = 10,000 atoms/s)', y_label: 'Matbench Discovery CPS (higher is better)', x_unit: '' });
   }
+  const lam6SpeedFig = lam6SpeedFigure(b.lam6_speed_scaling);
+  if (lam6SpeedFig) box.append(lam6SpeedFig);
+  const lam6BenchFig = factsFigure(b.lam6_materials_benchmarks, 'wide-showcase');
+  if (lam6BenchFig) box.append(lam6BenchFig);
   const sc = b.showcase;
   if (sc && sc.facts) {
     box.append(el('figure', { class: 'pfig showcase wide-showcase' },
       el('figcaption', { class: 'pfig-head' },
         el('span', { class: 'pfig-title' }, sc.title),
         el('span', { class: 'hw-badge' }, 'Apple M3 Max 36 GB')),
-      el('dl', { class: 'facts showcase-facts' }, Object.entries(sc.facts).flatMap(([k, v]) => [el('dt', {}, k), el('dd', { class: 'num' }, String(v))])),
+      el('dl', { class: 'facts showcase-facts' }, Object.entries(sc.facts).map(([k, v]) => el('div', { class: 'fact-pair' }, el('dt', {}, k), el('dd', { class: 'num' }, String(v))))),
       sc.note ? el('div', { class: 'pfig-src' }, el('p', {}, sc.note)) : null));
   }
   const t2p = factsFigure(b.materials_tier2_preview, 'wide-showcase');
@@ -231,7 +275,7 @@ export async function showPerf(openFull) {
       const tabDefs = [
         ['all', 'Both domains'],
         ['molecules', 'Molecules (Mena-LAM-s)'],
-        ['materials', 'Periodic Materials'],
+        ['materials', 'Periodic Materials (Mena-LAM-6)'],
       ];
       const syncDomain = () => {
         if (molSec) molSec.hidden = activeDomain === 'materials';

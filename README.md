@@ -92,7 +92,7 @@ Each model carries its own learned energy reference offsets: compare relative/to
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/materials-dark.svg">
-  <img alt="Mena-LAM-preview on crystals and surfaces: DynaMat CMDS 0.787; 2.4 hours and 0.72 GB peak memory on one A100" src="docs/materials-light.svg" width="100%">
+  <img alt="Mena-LAM-6 on crystals and surfaces: CPS 0.874, 555.3 atoms/ms on RTX PRO 6000 (98.6 on M3 Max), DynaMat MD in 43.6 min and 0.46 GB VRAM" src="docs/materials-light.svg" width="100%">
 </picture>
 
 The web app's **Performance** tab shows detailed benchmarks and lets you run a live 3D simulation or scaling test on your own computer.

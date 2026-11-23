@@ -129,10 +129,63 @@ def test_benchmarks_json_lam5_molecules_and_architecture_status():
             assert resp.status == 200
             served = json.loads(resp.read().decode("utf-8"))
             assert "molecules_lam5" in served and "architecture_status" in served
+            assert "lam6_materials_benchmarks" in served and "lam6_speed_scaling" in served
     finally:
         app.jobs.shutdown()
         srv.shutdown()
         srv.server_close()
+
+
+def test_benchmarks_json_lam6_leaderboard_and_speed():
+    """Verify Mena-LAM-6 (lam6-v1) leaderboard benchmarks, DynaMat/diamond rows, and cross-hardware speed table."""
+    b = json.loads((paths.DATA_DIR / "benchmarks.json").read_text(encoding="utf-8"))
+
+    # Hero KPI strip highlights lam6-v1
+    assert len(b["headline"]) == 4
+    assert b["headline"][0]["value"] == "0.46"
+    assert b["headline"][1]["value"] == "43.6"
+    assert b["headline"][2]["value"] == "0.874"
+    assert b["headline"][3]["value"] == "555.3k"
+
+    # DynaMat leaderboard includes Mena-LAM-6 (lam6-v1) on RTX PRO 6000
+    dm_lam6 = next(r for r in b["dynamat"]["rows"] if "Mena-LAM-6" in r["name"])
+    assert dm_lam6["mena"] is True
+    assert dm_lam6["gpu"] == "RTX PRO 6000"
+    assert dm_lam6["mem_gb"] == pytest.approx(0.456)
+    assert dm_lam6["hours"] == pytest.approx(0.726)
+    assert dm_lam6["cmds"] == pytest.approx(0.777)
+    assert dm_lam6["cps"] == pytest.approx(0.8739)
+
+    # Dense diamond includes Mena-LAM-6 on M3 Max with CPS 0.8739
+    di_lam6 = next(r for r in b["diamond"]["rows"] if r["name"] == "Mena-LAM-6")
+    assert di_lam6["mena"] is True
+    assert di_lam6["mb_per_atom"] == pytest.approx(0.049)
+    assert di_lam6["atoms_per_s"] == 37735
+    assert di_lam6["cps"] == pytest.approx(0.8739)
+
+    # 5-pillar Matbench Discovery & solid-state benchmarks card
+    lam6_b = b["lam6_materials_benchmarks"]["facts"]
+    assert "0.8739" in lam6_b["Combined Performance (CPS)"]
+    assert "0.9037" in lam6_b["Discovery (WBM-257k, uniq.)"] and "278.2 s" in lam6_b["Discovery (WBM-257k, uniq.)"]
+    assert "0.1824" in lam6_b["Phonons (PhononDB-103)"]
+    assert "0.0623" in lam6_b["Geometry Optimization"]
+    assert "0.7770" in lam6_b["DynaMat MD (CMDS, 17×80k)"] and "2,613.9 s" in lam6_b["DynaMat MD (CMDS, 17×80k)"]
+    assert "0.7606" in lam6_b["Diatomics (CDS, 92×119)"] and "21.1 s" in lam6_b["Diatomics (CDS, 92×119)"]
+
+    # Cross-hardware speed scaling table
+    rows = b["lam6_speed_scaling"]["rows"]
+    assert any(r["hw"] == "RTX PRO 6000" and r["n"] == 32768 and r["atoms_per_s"] == 555300 for r in rows)
+    assert any(r["hw"] == "RTX PRO 6000" and r["n"] == 314432 and r["atoms_per_s"] == 405700 for r in rows)
+    assert any(r["hw"] == "M3 Max GPU" and r["n"] == 8000 and r["atoms_per_s"] == 98646 for r in rows)
+    assert any(r["hw"] == "M3 Max CPU" and r["n"] == 1000 and r["atoms_per_s"] == 13262 for r in rows)
+
+    # Paper Fig 5b (Silicon speed) & Fig 4a (CPS vs. compute) datasets
+    si_rows = b["silicon_speed"]["rows"]
+    assert si_rows[0]["mena"] is True and si_rows[0]["atoms_per_ms"] == pytest.approx(555.3)
+    assert any(r["mena"] is True and r["atoms_per_ms"] == pytest.approx(98.6) for r in si_rows)
+    cc_rows = b["cps_vs_compute"]["rows"]
+    cc_lam6 = next(r for r in cc_rows if r["name"] == "Mena-LAM-6")
+    assert cc_lam6["mena"] is True and cc_lam6["gpu_h"] == pytest.approx(48.5) and cc_lam6["cps"] == pytest.approx(0.8739)
 
 
 def test_tile_system_molecular_grid_non_overlapping_and_lam5_routing(monkeypatch, tmp_path):
