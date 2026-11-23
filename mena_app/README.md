@@ -18,7 +18,7 @@ Everything runs on standard PyTorch with GPU acceleration on Apple Silicon and N
 ## Install
 
 ```bash
-pip install git+https://github.com/iatecoding/mena-lab
+pip install https://github.com/iatecoding/mena-lab/archive/refs/heads/main.zip
 ```
 
 Requires Python 3.10 or newer. On an NVIDIA GPU, install the CUDA build of [PyTorch](https://pytorch.org/get-started/locally/) first.
