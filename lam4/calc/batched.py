@@ -16,7 +16,7 @@ from lam4.calc.physics import (
     CRYSTAL_EV, E_ANG_TO_DEBYE, MOL_KCAL_TO_EV, OPEN_MOL_GPU_NL_MAX_ATOMS, _get_d3, assemble_fragment_tensors,
     build_edge_tensors, build_energy_decomposition, build_open_mol_edges_gpu,
     effective_periodic_cell, eval_batched_open_mol_d3, eval_dispersion_single, lot_u_atoms_for_calc, polarizability_from_sums,
-    resolve_charge_spin_fragments, resolve_lot_and_u,
+    resolve_charge_spin_fragments, resolve_lot_and_u, warn_if_periodic_mol_lot,
 )
 from lam4.calc.precision_hygiene import center_positions_f64, restore_charged_dipole_f64
 from lam4.data.batch import GraphBatch
@@ -112,6 +112,7 @@ def _eval_homogeneous_microbatch(
     for g_idx, at in enumerate(atoms_list):
         src, u_val = _resolve_frame_lot(calc, at, lcache)
         pbc_any = bool(np.any(at.get_pbc()))
+        warn_if_periodic_mol_lot(calc, src, pbc_any)
         z_np = z0 if same_topo else np.asarray(at.get_atomic_numbers(), dtype=np.int64)
         pos_np, origin_f64 = pos_all[g_idx]
         q_val, s_val, fid_np, fq_np, fs_np = resolve_charge_spin_fragments(

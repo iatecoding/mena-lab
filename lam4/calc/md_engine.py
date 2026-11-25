@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import math
 import threading
 import time
 from typing import Any, Sequence
@@ -15,7 +16,10 @@ from lam4.calc.d3_nl_cache import add_md_dispersion, has_triton_d3_on, rebuild_m
 from lam4.calc.md_nhc import get_fused_nhc_steps, integrate_nhc
 from lam4.calc import md_props as _mdp
 from lam4.calc.md_runner import init_md_engine_state, retarget_md_engine, sync_md_atoms
-from lam4.calc.physics import CRYSTAL_EV, MOL_KCAL_TO_EV, center_positions_f64, effective_periodic_cell, resolve_charge_and_spin, resolve_lot_and_u
+from lam4.calc.physics import (
+    CRYSTAL_EV, MOL_KCAL_TO_EV, center_positions_f64, effective_periodic_cell,
+    resolve_charge_and_spin, resolve_lot_and_u, warn_if_periodic_mol_lot,
+)
 from lam4.calc.runtime import _max_mol_compile_atoms, _max_whole_compile_atoms, get_md_compiled_runner, precision_context
 from lam4.calc.verlet import warm_calc_caches
 from lam4.physics.coulomb_exact import resolve_coulomb_meta
@@ -79,21 +83,36 @@ class MDEngine:
     def __init__(
         self, calc, atoms, *, temperature_K: float | None = 300.0, timestep_fs: float = 0.25, tdamp_fs: float = 25.0, skin: float = 0.6,
         window: int = 10, rebuild_frac: float = 0.5, use_graph: bool | str = "auto", use_compile: bool | str = "auto",
-        seed: int = 0, maxwell: bool = True, headroom: float = 1.12, _skip_init_eval: bool = False, record_properties: Sequence[str] = (),
-        ensemble: str = "nvt",
+        seed: int = 0, maxwell: bool = True, remove_com: bool = True, headroom: float = 1.12, _skip_init_eval: bool = False,
+        record_properties: Sequence[str] = (), ensemble: str = "nvt",
     ) -> None:
+        if getattr(atoms, "constraints", None):
+            raise ValueError("MDEngine does not support ASE constraints; use calc.run_md(...) (ASE fallback).")
+        rk = atoms.info.get("restraint_k", None)
+        if rk is not None:
+            try:
+                if np.any(np.asarray(rk, dtype=np.float64) > 0.0):
+                    raise ValueError("MDEngine does not support harmonic restraints (restraint_k); use calc.run_md(...) (ASE fallback).")
+            except (TypeError, ValueError) as exc:
+                if "restraint_k" in str(exc):
+                    raise
+                raise ValueError("MDEngine received invalid restraint_k; use calc.run_md(...) (ASE fallback).") from exc
         self.calc, self.model, self.dev = calc, calc.model, calc.device
         self.skin, self.window, self.rebuild_frac, self.headroom = float(skin), int(window), float(rebuild_frac), float(headroom)
+        self.remove_com = bool(remove_com)
         self.r_cut = float(self.model.cfg.r_cut)
         self.ensemble, self.atoms, self.st, self._temperature_K, self._tdamp_fs = init_md_engine_state(
             atoms, self.dev, ensemble=ensemble, temperature_K=temperature_K, timestep_fs=timestep_fs,
-            tdamp_fs=tdamp_fs, maxwell=maxwell, seed=seed,
+            tdamp_fs=tdamp_fs, maxwell=maxwell, seed=seed, remove_com=self.remove_com,
         )
         self._origin_f64 = center_positions_f64(self.atoms.get_positions())[1]
         self.n = len(self.atoms)
         self.z_np = np.asarray(self.atoms.get_atomic_numbers(), dtype=np.int64)
         self.pbc_any = bool(np.any(self.atoms.get_pbc()))
         self.src, self.u = calc._resolve_lot_cached(self.atoms, self.z_np) if hasattr(calc, "_resolve_lot_cached") else resolve_lot_and_u(self.atoms, calc.lot, calc.u_override)
+        if self.src.domain == "molecule" and (self.atoms.arrays.get("frag_id") is not None or self.atoms.info.get("frag_id") is not None):
+            raise ValueError("MDEngine does not support per-fragment charges/spins (frag_id); use calc.run_md(...) (ASE fallback).")
+        warn_if_periodic_mol_lot(calc, self.src, self.pbc_any)
         self.qv, self.sv = resolve_charge_and_spin(self.atoms, calc.charge_override, calc.spin_override, pbc_any=self.pbc_any)
         self.cell_np, self.pbc = effective_periodic_cell(self.atoms, self.r_cut) if self.pbc_any else (None, (False, False, False))
         self.can_stress = bool(self.pbc_any and all(self.pbc) and self.cell_np is not None and abs(float(np.linalg.det(self.cell_np))) > 1e-8)
@@ -128,6 +147,7 @@ class MDEngine:
         self._compiled_runner = None if self._traced_mode is not None else get_md_compiled_runner(calc, use_compile)
         self._retargeted = False
         self._prev_d = 0.0
+        self._sub_window = max(1, self.window)
         self.state_dt = torch.float32 if self.dev.type == "mps" else torch.float64
         fkw = dict(dtype=self.state_dt, device=self.dev)
         self.q_ref = self.st.q.clone()
@@ -225,6 +245,7 @@ class MDEngine:
             self._nhc_kT_t.fill_(float(self.st.kT))
             self._nhc_dt_t.fill_(float(self.st.dt))
             self._nhc_n3_t.fill_(float(3 * self.st.n_global))
+            self._sub_window = max(1, self.window)
 
     def _sync_chunks(self, fresh: bool) -> None:
         if not self.is_csr or self.dev.type != "cuda":
@@ -319,9 +340,9 @@ class MDEngine:
         self.f.copy_(f); self.e.copy_(e); self.s.copy_(s)
         if self._want_props: _mdp.flush_step_properties(self)
 
-    def _window_body(self, nsteps: int, win_offset: int = 0) -> None:
+    def _window_body(self, nsteps: int, win_offset: int = 0, compute_last_stress: bool = True) -> None:
         st, dt, dt2, is_nvt = self.st, self.st.dt, self.st.dt / 2, self.ensemble == "nvt"
-        use_fused_nhc = bool(is_nvt and st.tchain == 3 and st.tloop == 1 and self.dev.type == "cuda")
+        use_fused_nhc = bool(is_nvt and st.tchain == 3 and st.tloop == 1)
         q, p, eta, f = st.q, st.p, st.eta, self.f
         e = s = None
         with torch.no_grad():
@@ -331,7 +352,7 @@ class MDEngine:
                 for i in range(nsteps):
                     q, p, pe, eta = pre_step(q, p, f, pe, eta, st.masses, st.Q_t, self._nhc_kT_t, self._nhc_dt_t, self._nhc_n3_t)
                     self._q_cur = q
-                    e, f, s = self._forces(need_stress=(i == nsteps - 1))
+                    e, f, s = self._forces(need_stress=(compute_last_stress and i == nsteps - 1))
                     p, pe, eta, disp2 = post_step(p, f, pe, eta, st.masses, st.Q_t, self._nhc_kT_t, self._nhc_dt_t, self._nhc_n3_t, q, self.q_ref, disp2)
                     if self._want_props: _mdp.record_win_step_properties(self, win_offset + i)
                 st.q.copy_(q); st.p.copy_(p); st.eta.copy_(eta); st.p_eta.copy_(pe); self.disp2.copy_(disp2)
@@ -342,14 +363,16 @@ class MDEngine:
                     p = p + dt2 * f
                     q = q + dt * p / st.masses
                     self._q_cur = q
-                    e, f, s = self._forces(need_stress=(i == nsteps - 1))
+                    e, f, s = self._forces(need_stress=(compute_last_stress and i == nsteps - 1))
                     p = p + dt2 * f
                     if is_nvt: p, p_eta, eta = integrate_nhc(st, p, p_eta, eta, dt2)
                     self.disp2.copy_(torch.maximum(self.disp2, ((q - self.q_ref) ** 2).sum(1).max()))
                     if self._want_props: _mdp.record_win_step_properties(self, win_offset + i)
                 st.q.copy_(q); st.p.copy_(p)
                 if is_nvt: st.eta.copy_(eta); st.p_eta.copy_(torch.stack(p_eta))
-            self.f.copy_(f); self.e.copy_(e); self.s.copy_(s)
+            self.f.copy_(f); self.e.copy_(e)
+            if s is not None:
+                self.s.copy_(s)
             self._pack_buf[0].copy_(self.disp2); self._pack_buf[1].copy_(self.e); self._pack_buf[2:].copy_(self.s.reshape(-1))
             if self._want_props: _mdp.flush_step_properties(self)
 
@@ -426,38 +449,61 @@ class MDEngine:
     def _pack_d2_e_s(self) -> np.ndarray:
         return self._pack_buf.cpu().numpy()
 
-    def window_step(self) -> None:
-        if self._retargeted:
-            self._rebuild()
-            self._forces_now()
+    def _step_chunk(self, nsteps: int, win_offset: int, *, compute_last_stress: bool, use_graph: bool) -> np.ndarray:
         d0, snap = self._prev_d, self._snapshot_win()
-        self._run_window()
+        if use_graph:
+            self._run_window()
+        else:
+            self._window_body(nsteps, win_offset=win_offset, compute_last_stress=compute_last_stress)
         packed = self._pack_d2_e_s()
         d2, half_s = float(packed[0]), 0.5 * self.skin
         reb_d2 = (self.rebuild_frac * half_s) ** 2
-        if d2 > half_s * half_s:
+        if d2 > half_s * half_s and (d0 > 0.0 or nsteps > 1):
             self.stats["rollbacks"] += 1
             self._restore(snap)
             if d0 > 0.0:
                 self._rebuild()
-                self._run_window()
+                if use_graph:
+                    self._run_window()
+                else:
+                    self._window_body(nsteps, win_offset=win_offset, compute_last_stress=compute_last_stress)
                 packed = self._pack_d2_e_s()
                 d2 = float(packed[0])
-            if d2 > half_s * half_s:
+            if d2 > half_s * half_s and nsteps > 1:
                 if d0 > 0.0:
                     self._restore(snap)
-                self._rebuild()
-                for step_i in range(self.window):
-                    self._window_body(1, win_offset=step_i)
-                    if float(self.disp2) > reb_d2:
+                    self._rebuild()
+                if self.graph is None:
+                    d_fail = math.sqrt(max(d2, 1e-12))
+                    safe = max(1, min(nsteps - 1, int(0.75 * half_s / max(d_fail / nsteps, 1e-6))))
+                    self._sub_window = min(self._sub_window, safe)
+                for step_i in range(nsteps):
+                    self._window_body(1, win_offset=win_offset + step_i, compute_last_stress=(compute_last_stress and step_i == nsteps - 1))
+                    if step_i < nsteps - 1 and float(self.disp2) > reb_d2:
                         self._rebuild()
                 packed = self._pack_d2_e_s()
                 d2 = float(packed[0])
-        d_cur = float(np.sqrt(max(d2, 0.0)))
-        if d2 > reb_d2 or (d_cur + 1.25 * max(d_cur - d0, 0.0) > half_s):
+        d_cur = float(math.sqrt(max(d2, 0.0)))
+        pred_k = 1.5 if self._sub_window < self.window else 1.25
+        if d2 > reb_d2 or (d_cur + pred_k * max(d_cur - d0, 0.0) > half_s):
             self._rebuild()
         else:
             self._prev_d = d_cur
+        return packed
+
+    def window_step(self) -> None:
+        if self._retargeted:
+            self._rebuild()
+            self._forces_now()
+        if self._sub_window < self.window and self.graph is None:
+            off = 0
+            packed = self._pack_d2_e_s()
+            while off < self.window:
+                c = min(self._sub_window, self.window - off)
+                packed = self._step_chunk(c, off, compute_last_stress=(off + c == self.window), use_graph=False)
+                off += c
+        else:
+            packed = self._step_chunk(self.window, 0, compute_last_stress=True, use_graph=True)
         self.stats["windows"] += 1
         self.stats["steps"] += self.window
         self._last = packed
@@ -465,7 +511,12 @@ class MDEngine:
     def run(self, n_steps: int, record: bool = False, record_properties: Sequence[str] | None = None) -> dict[str, Any]:
         if record_properties is not None: self._configure_record_properties(record_properties)
         n_win = -(-int(n_steps) // self.window)
-        sync = (lambda: torch.cuda.synchronize(self.dev)) if self.dev.type == "cuda" else (lambda: None)
+        if self.dev.type == "cuda":
+            sync = lambda: torch.cuda.synchronize(self.dev)  # noqa: E731
+        elif self.dev.type == "mps":
+            sync = torch.mps.synchronize
+        else:
+            sync = lambda: None  # noqa: E731
         sync()
         t0 = time.perf_counter()
         for _ in range(n_win):
@@ -498,7 +549,7 @@ class MDEngine:
 
     def info(self) -> dict[str, Any]:
         return dict(
-            n_atoms=self.n, e_cap=self.e_cap, csr=self.is_csr,
+            n_atoms=self.n, e_cap=self.e_cap, csr=self.is_csr, sub_window=self._sub_window,
             compiled=bool(self._compiled_runner is not None or self._traced_ff is not None),
             traced=self._traced_ff is not None,
             graph=self.graph is not None, graph_error=self.graph_error, compile_graph_error=self.compile_graph_error, **self.stats,

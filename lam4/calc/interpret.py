@@ -56,6 +56,79 @@ def _kabsch_rotation(src_pos: np.ndarray, dst_pos: np.ndarray) -> np.ndarray:
     return (vt.T @ diag @ u.T).astype(np.float64)
 
 
+def monopole_field_ea2(
+    src_pos: np.ndarray,
+    src_q: np.ndarray,
+    dst_pos: np.ndarray,
+    *,
+    sigma: float | None = SIGMA,
+) -> np.ndarray:
+    """Electric field (`e/A^2`) at `dst_pos` [M, 3] due to charges `src_q` [S] at `src_pos` [S, 3].
+
+    When `sigma is None`, evaluates the unsmeared point-charge Coulomb field `sum_j q_j r_ij / r^3`.
+    When `sigma > 0`, evaluates the exact `lam4` Gaussian-smeared field `sum_j q_j f1(r/sigma) r_ij / r^3`.
+    """
+    sp = np.asarray(src_pos, dtype=np.float64).reshape(-1, 3)
+    sq = np.asarray(src_q, dtype=np.float64).reshape(-1)
+    dp = np.asarray(dst_pos, dtype=np.float64).reshape(-1, 3)
+    if len(sp) == 0 or len(dp) == 0:
+        return np.zeros((len(dp), 3), dtype=np.float64)
+    diff = dp[:, None, :] - sp[None, :, :]
+    r2 = np.sum(diff * diff, axis=-1)
+    r = np.sqrt(np.maximum(r2, 1e-24))
+    valid = r > 1e-8
+    if sigma is None:
+        radial = np.where(valid, 1.0 / (r * r2), 0.0)
+    else:
+        u = r / float(sigma)
+        erf_u = torch.erf(torch.from_numpy(u)).numpy()
+        f1 = erf_u - (2.0 / math.sqrt(math.pi)) * u * np.exp(-u * u)
+        radial = np.where(valid, f1 / (r * r2), 0.0)
+    return np.einsum("ij,ijc,j->ic", radial, diff, sq, dtype=np.float64)
+
+
+def dipole_field_ea2(
+    src_pos: np.ndarray,
+    src_p: np.ndarray,
+    dst_pos: np.ndarray,
+    *,
+    sigma: float | None = SIGMA,
+) -> np.ndarray:
+    """Electric field (`e/A^2`) at `dst_pos` [M, 3] due to atomic dipoles `src_p` [S, 3] (`e*A`) at `src_pos` [S, 3].
+
+    When `sigma is None`, evaluates the exact point-dipole field:
+        `E(r_i) = sum_j [3 (p_j . r_ij) r_ij - r^2 p_j] / r^5`.
+    When `sigma > 0`, evaluates the exact Gaussian-smeared dipole field `-grad_i (p_j . grad_j [erf(r/sigma)/r])`:
+        `E(r_i) = sum_j [3 f2(r/sigma) (p_j . r_ij) r_ij - f1(r/sigma) r^2 p_j] / r^5`
+        with `f1(u) = erf(u) - (2/sqrt(pi)) u exp(-u^2)`, `f2(u) = f1(u) - (4/(3 sqrt(pi))) u^3 exp(-u^2)`.
+    """
+    sp = np.asarray(src_pos, dtype=np.float64).reshape(-1, 3)
+    sd = np.asarray(src_p, dtype=np.float64).reshape(-1, 3)
+    dp = np.asarray(dst_pos, dtype=np.float64).reshape(-1, 3)
+    if len(sp) == 0 or len(dp) == 0:
+        return np.zeros((len(dp), 3), dtype=np.float64)
+    diff = dp[:, None, :] - sp[None, :, :]
+    r2 = np.sum(diff * diff, axis=-1)
+    r = np.sqrt(np.maximum(r2, 1e-24))
+    r3 = r * r2
+    r5 = r3 * r2
+    valid = r > 1e-8
+    p_dot_r = np.einsum("jc,ijc->ij", sd, diff, dtype=np.float64)
+    if sigma is None:
+        c_proj = np.where(valid, 3.0 * p_dot_r / r5, 0.0)
+        c_self = np.where(valid, -1.0 / r3, 0.0)
+    else:
+        u = r / float(sigma)
+        u2 = u * u
+        g = (2.0 / math.sqrt(math.pi)) * u * np.exp(-u2)
+        erf_u = torch.erf(torch.from_numpy(u)).numpy()
+        f1 = erf_u - g
+        f2 = erf_u - g * (1.0 + (2.0 / 3.0) * u2)
+        c_proj = np.where(valid, 3.0 * f2 * p_dot_r / r5, 0.0)
+        c_self = np.where(valid, -f1 / r3, 0.0)
+    return np.einsum("ij,ijc->ic", c_proj, diff, dtype=np.float64) + np.einsum("ij,jc->ic", c_self, sd, dtype=np.float64)
+
+
 def _smeared_coulomb_field_from_sources(
     src_pos: np.ndarray,
     src_q: np.ndarray,
@@ -64,16 +137,7 @@ def _smeared_coulomb_field_from_sources(
     sigma: float = SIGMA,
 ) -> np.ndarray:
     """Compute exact `lam4` erf-smeared electric field (e/A^2) at `dst_pos` due to `src_q` at `src_pos`."""
-    if len(src_pos) == 0 or len(dst_pos) == 0:
-        return np.zeros((len(dst_pos), 3), dtype=np.float64)
-    diff = dst_pos[:, None, :] - src_pos[None, :, :]
-    r = np.linalg.norm(diff, axis=-1)
-    r_safe = np.maximum(r, 1e-12)
-    u = r / float(sigma)
-    erf_u = torch.erf(torch.from_numpy(u)).numpy()
-    radial = (erf_u - (2.0 / math.sqrt(math.pi)) * u * np.exp(-u * u)) / (r_safe ** 3)
-    radial = np.where(r > 1e-8, radial, 0.0)
-    return np.einsum("ij,ijc,j->ic", radial, diff, src_q, dtype=np.float64)
+    return monopole_field_ea2(src_pos, src_q, dst_pos, sigma=sigma)
 
 
 def _infer_subset_charge_spin(
@@ -165,12 +229,15 @@ def analyze_binding_multipoles(
     """Run Quantum Dipole & Electric-Field X-Ray analysis on a protein-ligand complex.
 
     Computes per ligand atom and per functional group:
-      - ``E_pkt_i = fld_cpx_i - fld_lig_bound_i`` (in ``e/A^2``, ``V/A``, and ``MV/cm``),
-        plus ``E_pkt_direct_i`` (exact smeared Coulomb field due solely to ``q_cpx[pkt]``).
+      - Monopole-only internal field difference ``E_pkt_i = fld_cpx_i - fld_lig_bound_i`` (in ``e/A^2``, ``V/A``,
+        and ``MV/cm``), plus ``E_pkt_direct_i`` / ``E_q_*`` (exact smeared Coulomb field due solely to ``q_cpx[pkt]``).
+      - Full multipole pocket electric field ``E_tot = E_q + E_p_perm + E_p_ind`` (both Gaussian-smeared
+        ``sigma=coulomb_sigma`` and unsmeared point-multipole ``*_point_mv_cm`` for direct Stark comparison),
+        capturing the 55-65% dipole field carried by ``atomic_dipoles_perm`` and ``atomic_dipoles_ind``.
       - Binding-induced dipole shift ``dp_bind_i = p_tot_cpx_i - p_tot_lig_bound_i`` (Debye),
         and optional Kabsch-aligned conformational dipole shift ``p_tot_lig_bound_i - p_tot_lig_free_i``.
-      - Dipole-Field Alignment Score ``E_align_i = -K_COUL * (p_tot_cpx_i . E_pkt_i)`` (kcal/mol;
-        ``< 0`` stabilizing/aligned, ``> 0`` electrostatically frustrated).
+      - Dipole-Field Alignment Score ``E_align_i = -K_COUL * (p_tot_cpx_i . E_pkt_i)`` and full-multipole
+        ``E_align_tot_i = -K_COUL * (p_tot_cpx_i . E_tot_i)`` (kcal/mol; ``< 0`` stabilizing, ``> 0`` frustrated).
       - Per-atom multipole desolvation penalty ``ddG_solv_i`` (monopole + GK dipole + SASA, kcal/mol).
     """
     n_cpx = len(cpx_atoms)
@@ -195,15 +262,34 @@ def analyze_binding_multipoles(
     lig_res = _eval_with_multipoles(calc, lig_bound_atoms)
 
     q_cpx, p_cpx, fld_cpx = cpx_res["charges"], cpx_res["atomic_dipoles"], cpx_res["electric_field"]
+    p_perm_cpx, p_ind_cpx = cpx_res["atomic_dipoles_perm"], cpx_res["atomic_dipoles_ind"]
     q_lig_b, p_lig_b, fld_lig_b = lig_res["charges"], lig_res["atomic_dipoles"], lig_res["electric_field"]
+    p_perm_lig_b, p_ind_lig_b = lig_res["atomic_dipoles_perm"], lig_res["atomic_dipoles_ind"]
     p_cpx_l, q_cpx_l, fld_cpx_l = p_cpx[lig_b], q_cpx[lig_b], fld_cpx[lig_b]
+    p_perm_cpx_l, p_ind_cpx_l = p_perm_cpx[lig_b], p_ind_cpx[lig_b]
 
     e_pkt_ea2 = fld_cpx_l - fld_lig_b
     cpx_pos = cpx_atoms.get_positions()
     sigma = float(getattr(calc.model.cfg, "coulomb_sigma", SIGMA)) if hasattr(calc, "model") else SIGMA
-    e_pkt_direct_ea2 = _smeared_coulomb_field_from_sources(cpx_pos[pkt_b], q_cpx[pkt_b], cpx_pos[lig_b], sigma=sigma)
+    pkt_pos, lig_pos_all = cpx_pos[pkt_b], cpx_pos[lig_b]
+    e_pkt_direct_ea2 = monopole_field_ea2(pkt_pos, q_cpx[pkt_b], lig_pos_all, sigma=sigma)
+    e_p_perm_ea2 = dipole_field_ea2(pkt_pos, p_perm_cpx[pkt_b], lig_pos_all, sigma=sigma)
+    e_p_ind_ea2 = dipole_field_ea2(pkt_pos, p_ind_cpx[pkt_b], lig_pos_all, sigma=sigma)
+    e_p_ea2 = e_p_perm_ea2 + e_p_ind_ea2
+    e_tot_ea2 = e_pkt_direct_ea2 + e_p_ea2
+
+    e_q_pt_ea2 = monopole_field_ea2(pkt_pos, q_cpx[pkt_b], lig_pos_all, sigma=None)
+    e_p_perm_pt_ea2 = dipole_field_ea2(pkt_pos, p_perm_cpx[pkt_b], lig_pos_all, sigma=None)
+    e_p_ind_pt_ea2 = dipole_field_ea2(pkt_pos, p_ind_cpx[pkt_b], lig_pos_all, sigma=None)
+    e_p_pt_ea2 = e_p_perm_pt_ea2 + e_p_ind_pt_ea2
+    e_tot_pt_ea2 = e_q_pt_ea2 + e_p_pt_ea2
+
     e_pkt_va, e_pkt_mv_cm = field_to_va(e_pkt_ea2), field_to_mv_cm(e_pkt_ea2)
     e_pkt_norm_va, e_pkt_norm_mv_cm = np.linalg.norm(e_pkt_va, axis=-1), np.linalg.norm(e_pkt_mv_cm, axis=-1)
+    e_tot_va, e_tot_mv_cm = field_to_va(e_tot_ea2), field_to_mv_cm(e_tot_ea2)
+    e_tot_norm_va, e_tot_norm_mv_cm = np.linalg.norm(e_tot_va, axis=-1), np.linalg.norm(e_tot_mv_cm, axis=-1)
+    e_tot_pt_mv_cm = field_to_mv_cm(e_tot_pt_ea2)
+    e_tot_pt_norm_mv_cm = np.linalg.norm(e_tot_pt_mv_cm, axis=-1)
 
     dp_bind_ea = p_cpx_l - p_lig_b
     dp_bind_deb = dipole_to_debye(dp_bind_ea)
@@ -212,6 +298,9 @@ def analyze_binding_multipoles(
     e_align_kcal = -K_COUL * np.sum(p_cpx_l * e_pkt_ea2, axis=-1)
     denom = np.linalg.norm(p_cpx_l, axis=-1) * np.linalg.norm(e_pkt_ea2, axis=-1)
     e_align_cos = np.where(denom > 1e-10, np.sum(p_cpx_l * e_pkt_ea2, axis=-1) / np.maximum(denom, 1e-10), 0.0)
+    e_align_tot_kcal = -K_COUL * np.sum(p_cpx_l * e_tot_ea2, axis=-1)
+    denom_tot = np.linalg.norm(p_cpx_l, axis=-1) * np.linalg.norm(e_tot_ea2, axis=-1)
+    e_align_tot_cos = np.where(denom_tot > 1e-10, np.sum(p_cpx_l * e_tot_ea2, axis=-1) / np.maximum(denom_tot, 1e-10), 0.0)
 
     pol_cpx_ev, pol_lig_ev = cpx_res["polarization_atom"][lig_b], lig_res["polarization_atom"]
     de_pol_bind_kcal = (pol_cpx_ev - pol_lig_ev) / MOL_KCAL_TO_EV
@@ -284,7 +373,11 @@ def analyze_binding_multipoles(
             "sum_dp_bind_debye": float(np.sum(dp_bind_norm_deb[idx_arr])),
             "mean_E_pkt_mv_cm": float(np.mean(e_pkt_norm_mv_cm[idx_arr])),
             "max_E_pkt_mv_cm": float(np.max(e_pkt_norm_mv_cm[idx_arr])),
-            "E_align_kcal": e_al, "ddg_solv_atom_kcal": float(np.sum(ddg_solv_at[idx_arr])),
+            "mean_E_tot_mv_cm": float(np.mean(e_tot_norm_mv_cm[idx_arr])),
+            "max_E_tot_mv_cm": float(np.max(e_tot_norm_mv_cm[idx_arr])),
+            "mean_E_tot_point_mv_cm": float(np.mean(e_tot_pt_norm_mv_cm[idx_arr])),
+            "E_align_kcal": e_al, "E_align_tot_kcal": float(np.sum(e_align_tot_kcal[idx_arr])),
+            "ddg_solv_atom_kcal": float(np.sum(ddg_solv_at[idx_arr])),
             "ddg_gb_atom_kcal": ddg_g, "ddg_mono_atom_kcal": float(np.sum(ddg_mono_at[idx_arr])),
             "ddg_dip_atom_kcal": float(np.sum(ddg_dip_at[idx_arr])), "net_elec_score_kcal": e_al + ddg_g,
             "status": "stabilizing" if e_al < -0.25 else ("frustrated" if e_al > 0.25 else "neutral"),
@@ -294,6 +387,8 @@ def analyze_binding_multipoles(
         "lig_indices": lig_idx, "symbols": lig_syms, "atomic_numbers": lig_bound_atoms.get_atomic_numbers(),
         "pos": lig_pos, "charges_cpx": q_cpx_l, "charges_lig_bound": q_lig_b, "dq_bind": q_cpx_l - q_lig_b,
         "atomic_dipoles_cpx": p_cpx_l, "atomic_dipoles_lig_bound": p_lig_b,
+        "atomic_dipoles_perm_cpx": p_perm_cpx_l, "atomic_dipoles_ind_cpx": p_ind_cpx_l,
+        "atomic_dipoles_perm_lig_bound": p_perm_lig_b, "atomic_dipoles_ind_lig_bound": p_ind_lig_b,
         "atomic_dipoles_cpx_debye": dipole_to_debye(p_cpx_l), "atomic_dipoles_lig_bound_debye": dipole_to_debye(p_lig_b),
         "dp_bind_ea": dp_bind_ea, "dp_bind_debye": dp_bind_deb, "dp_bind_norm_debye": dp_bind_norm_deb,
         "atomic_dipoles_lig_free_debye": p_lig_free_deb, "dp_conf_debye": dp_conf_deb, "dp_conf_norm_debye": dp_conf_norm_deb,
@@ -301,7 +396,20 @@ def analyze_binding_multipoles(
         "E_pkt_ea2": e_pkt_ea2, "E_pkt_direct_ea2": e_pkt_direct_ea2,
         "E_pkt_va": e_pkt_va, "E_pkt_norm_va": e_pkt_norm_va,
         "E_pkt_mv_cm": e_pkt_mv_cm, "E_pkt_norm_mv_cm": e_pkt_norm_mv_cm,
+        "E_q_ea2": e_pkt_direct_ea2, "E_q_mv_cm": field_to_mv_cm(e_pkt_direct_ea2),
+        "E_p_perm_ea2": e_p_perm_ea2, "E_p_perm_mv_cm": field_to_mv_cm(e_p_perm_ea2),
+        "E_p_ind_ea2": e_p_ind_ea2, "E_p_ind_mv_cm": field_to_mv_cm(e_p_ind_ea2),
+        "E_p_ea2": e_p_ea2, "E_p_mv_cm": field_to_mv_cm(e_p_ea2),
+        "E_tot_ea2": e_tot_ea2, "E_tot_va": e_tot_va, "E_tot_norm_va": e_tot_norm_va,
+        "E_tot_mv_cm": e_tot_mv_cm, "E_tot_norm_mv_cm": e_tot_norm_mv_cm,
+        "E_q_point_mv_cm": field_to_mv_cm(e_q_pt_ea2),
+        "E_p_perm_point_mv_cm": field_to_mv_cm(e_p_perm_pt_ea2),
+        "E_p_ind_point_mv_cm": field_to_mv_cm(e_p_ind_pt_ea2),
+        "E_p_point_mv_cm": field_to_mv_cm(e_p_pt_ea2),
+        "E_tot_point_mv_cm": e_tot_pt_mv_cm, "E_tot_point_norm_mv_cm": e_tot_pt_norm_mv_cm,
         "E_align_kcal": e_align_kcal, "E_align_cos": e_align_cos, "E_align_total_kcal": float(np.sum(e_align_kcal)),
+        "E_align_tot_kcal": e_align_tot_kcal, "E_align_tot_cos": e_align_tot_cos,
+        "E_align_tot_total_kcal": float(np.sum(e_align_tot_kcal)),
         "polarization_atom_cpx_ev": pol_cpx_ev, "polarization_atom_lig_bound_ev": pol_lig_ev,
         "dE_pol_bind_kcal": de_pol_bind_kcal, "ddg_solv_atom_kcal": ddg_solv_at,
         "ddg_gb_atom_kcal": ddg_gb_at, "ddg_mono_atom_kcal": ddg_mono_at,

@@ -96,16 +96,14 @@
 .fact-pair dt { font-size: .78rem; color: var(--muted); font-weight: 550; }
 .fact-pair dd { margin: 0; font-size: .8rem; color: var(--text); }
 
-/* Prominent Hardware Advantage Banner */
-.hw-banner { background: var(--surface); border: 1.5px solid var(--accent); border-radius: var(--radius); padding: .85rem 1.05rem; margin-bottom: 1rem; }
-.hw-banner-title { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; margin-bottom: .55rem; font-size: .86rem; font-weight: 650; }
-.hw-tag { padding: .18rem .6rem; border-radius: var(--radius-sm); font-family: var(--mono); font-size: .79rem; font-weight: 600; }
+/* Compact Hardware Context Strip */
+.hw-banner { background: var(--surface); border: 1px solid var(--border-strong); border-left: 3.5px solid var(--accent); border-radius: var(--radius); padding: .55rem .85rem; margin-bottom: .9rem; }
+.hw-banner-title { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; font-size: .82rem; font-weight: 600; }
+.hw-tag { padding: .14rem .52rem; border-radius: var(--radius-sm); font-family: var(--mono); font-size: .76rem; font-weight: 600; }
 .hw-tag.mena { background: var(--accent); color: var(--accent-ink); }
 .hw-tag.other { background: var(--surface-3); color: var(--text); border: 1px solid var(--border-strong); }
 .hw-vs { color: var(--muted); font-weight: 600; }
-.hw-banner-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem 1.25rem; font-size: .83rem; line-height: 1.45; color: var(--text); }
-.hw-banner-grid p { margin: 0; }
-@media (max-width: 900px) { .hw-banner-grid { grid-template-columns: 1fr; } }
+.hw-banner-note { margin: .32rem 0 0; font-size: .78rem; line-height: 1.4; color: var(--muted); }
 
 /* Hero KPI strip */
 .hero { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); margin-bottom: 1rem; overflow: hidden; }

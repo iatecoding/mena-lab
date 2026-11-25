@@ -16,7 +16,7 @@ from lam4.calc.physics import (
     CRYSTAL_EV, E_ANG_TO_DEBYE, MOL_KCAL_TO_EV, _get_d3,
     build_energy_decomposition, effective_periodic_cell, eval_dispersion_device, eval_dispersion_single,
     polarizability_from_sums, resolve_charge_and_spin, resolve_charge_spin_fragments,
-    resolve_lot_and_u,
+    resolve_lot_and_u, warn_if_periodic_mol_lot,
 )
 from lam4.calc.multipole_pack import MULTIPOLE_PROPERTIES, append_multipole_flat_parts, unpack_multipoles_from_host, wants_multipoles
 from lam4.calc.precision_hygiene import center_positions_f64, restore_charged_dipole_f64, run_recentered_relax_batch
@@ -197,6 +197,7 @@ class MenaCalculator(Calculator):
         pos_c, origin_f64 = center_positions_f64(pos_np)
         src, u_val = self._resolve_lot_cached(atoms, z_np)
         pbc_any = bool(np.any(atoms.get_pbc()))
+        warn_if_periodic_mol_lot(self, src, pbc_any)
         q_val, s_val, fid_np, fq_np, fs_np = resolve_charge_spin_fragments(
             atoms, z_np, self.charge_override, self.spin_override, pbc_any=pbc_any, domain=src.domain,
         )
@@ -418,13 +419,13 @@ class MenaCalculator(Calculator):
         from lam4.calc.md_engine import MDEngine
         return MDEngine(self, atoms, **kwargs)
 
-    def interpretation(self, atoms: Atoms | None = None) -> dict[str, Any]:
+    def interpretation(self, atoms: Atoms | None = None, *, include_invalid: bool = False) -> dict[str, Any]:
         """Physics-head read-out (charges, spins, Pauli overlap, exchange, gap); see `lam4.calc.interpret_heads`."""
         from lam4.calc.interpret_heads import interpret_heads
         target = atoms if atoms is not None else self.atoms
         if target is None:
             raise ValueError("interpretation() needs atoms (or a previous calculate())")
-        return interpret_heads(self, target)
+        return interpret_heads(self, target, include_invalid=include_invalid)
 
     def explain(self) -> str:
         return format_calc_summary(self.results, self.device)

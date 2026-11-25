@@ -48,12 +48,10 @@ function hardwareCallout(hb) {
   if (!hb) return null;
   return el('div', { class: 'hw-banner', role: 'region', 'aria-label': 'Hardware comparison context' },
     el('div', { class: 'hw-banner-title' },
-      el('span', { class: 'hw-tag mena' }, hb.mena_tag || 'Mena-LAM-6 (lam6-v1): 1× RTX PRO 6000 / Apple M3 Max laptop (strict FP32)'),
+      el('span', { class: 'hw-tag mena' }, hb.mena_tag || 'Mena-LAM-6: RTX PRO 6000 / M3 Max laptop (strict FP32)'),
       el('span', { class: 'hw-vs' }, 'vs.'),
-      el('span', { class: 'hw-tag other' }, hb.other_tag || 'Competitors: NVIDIA H100 / H200 / RTX PRO 6000 / H20 96 GB')),
-    el('div', { class: 'hw-banner-grid' },
-      el('p', {}, el('strong', {}, 'Matbench Discovery DynaMat MD (RTX PRO 6000 vs. H100/H200/Blackwell): '), hb.dynamat),
-      el('p', {}, el('strong', {}, 'Dense Diamond 158 nbr/atom (M3 Max laptop vs. H20 96 GB): '), hb.diamond)));
+      el('span', { class: 'hw-tag other' }, hb.other_tag || 'Baselines: H100 / H200 / RTX PRO 6000 / H20 96 GB')),
+    hb.summary ? el('p', { class: 'hw-banner-note' }, hb.summary) : null);
 }
 
 function hero(items) {
@@ -92,7 +90,7 @@ function moleculesSection(b) {
     el('div', { class: 'domain-head' },
       el('div', {},
         el('h3', { class: 'domain-title' }, 'Molecules & Biomolecules — Mena-LAM-s (lam5-v1)'),
-        el('p', { class: 'muted domain-desc' }, 'Accuracy against CCSD(T) and DFT references, IR and Raman spectra, and speed and memory on a laptop GPU and CPU.')),
+        el('p', { class: 'muted domain-desc' }, 'Accuracy vs. CCSD(T)/DFT, IR & Raman spectroscopy, and laptop GPU/CPU scaling.')),
       el('span', { class: 'domain-tag active' }, 'Default for molecules')),
     hero(m.headline));
 
@@ -137,9 +135,9 @@ function materialsSection(b) {
   const sec = el('section', { class: 'domain-section', 'aria-label': 'Periodic materials benchmarks' },
     el('div', { class: 'domain-head' },
       el('div', {},
-        el('h3', { class: 'domain-title' }, 'Crystals & Surfaces — Mena-LAM-6 (lam6-v1) Leaderboard & Speed'),
-        el('p', { class: 'muted domain-desc' }, 'Default materials model (strict IEEE FP32): Matbench Discovery CPS 0.874, F1 0.904, κ_SRME 0.182, WBM-257k in 4m 38s, DynaMat MD in 43.6 min (0.46 GB VRAM).')),
-      el('span', { class: 'domain-tag active' }, 'Default: Mena-LAM-6 (lam6-v1)')),
+        el('h3', { class: 'domain-title' }, 'Crystals & Surfaces — Mena-LAM-6 (lam6-v1)'),
+        el('p', { class: 'muted domain-desc' }, 'Strict IEEE FP32 accuracy, speed, and memory across crystals and surfaces.')),
+      el('span', { class: 'domain-tag active' }, 'Default for crystals')),
     hero(b.headline),
     hardwareCallout(b.hardware_banner));
 
@@ -191,8 +189,8 @@ function materialsSection(b) {
         title: `${r.name} on ${r.gpu}: ${r.hours} h, CMDS ${r.cmds}${r.cps ? `, CPS ${r.cps}` : ''}`,
       }));
     const fig2 = el('div');
-    box.append(figure('Speed vs. accuracy (CMDS) in DynaMat MD', '#1 active speed · 43.6 min (strict FP32)', fig2,
-      { note: dm.note, source: dm.source + ' Up and to the left is better (faster on x, more accurate on y).' }));
+    box.append(figure('Speed vs. accuracy (CMDS) in DynaMat MD', '#1 active speed · 43.6 min', fig2,
+      { source: 'Matbench Discovery DynaMat v1.0. Up and to the left is better.' }));
     if (pts.length) scatter(fig2, { points: pts, x_label: 'MD wall time (hours, log scale, lower is better)', y_label: 'CMDS (higher is better)', x_unit: ' h' });
   }
   const di = b.diamond;
@@ -205,7 +203,7 @@ function materialsSection(b) {
         title: `${r.name} (${r.hardware}): ${r.mb_per_atom} MB/atom${r.atoms_per_ms != null ? `, ${r.atoms_per_ms} atoms/ms (${Math.round(r.atoms_per_ms * 1000).toLocaleString('en-US')} atoms/s)` : ''}`,
       }));
     const fig3 = el('div');
-    box.append(figure(di.title || 'Memory per atom, dense diamond', 'Mena-LAM-6: M3 Max · Others: H20 96GB', fig3, di));
+    box.append(figure(di.title || 'Memory per atom, dense diamond', 'Mena: M3 Max laptop · Others: H20 96 GB', fig3, di));
     if (rows.length) hbars(fig3, { rows, unit: 'MB', x_label: 'memory per atom (MB, log scale, lower is better)' });
 
     const dPts = di.rows.filter(r => r.atoms_per_ms != null && r.cps != null)
@@ -217,9 +215,8 @@ function materialsSection(b) {
         title: `${r.name} on ${r.hardware}: ${r.atoms_per_ms} atoms/ms (${Math.round(r.atoms_per_ms * 1000).toLocaleString('en-US')} atoms/s), CPS ${r.cps}, ${r.mb_per_atom} MB/atom`,
       }));
     const fig4 = el('div');
-    box.append(figure('Discovery accuracy (CPS) vs. speed on dense diamond (158 nbr/atom)', 'M3 Max laptop (300 GB/s) vs. H20 (4,000 GB/s)', fig4, {
-      note: (di.rows.filter(r => r.mena && r.cps != null).map(r => `${r.name} (${r.atoms_per_ms} atoms/ms = ${r.atoms_per_s.toLocaleString('en-US')} atoms/s, CPS ${r.cps})`).join('; ') || 'Mena') + ' measured on an Apple M3 Max laptop; all other models ran on an NVIDIA H20 96 GB server GPU (DPA4 Fig. 1c / Table S-17).',
-      source: 'Matbench Discovery CPS vs. saturated diamond E+F+S throughput (1 atom/ms = 1,000 atoms/s). Up and to the right is better.',
+    box.append(figure('Discovery accuracy (CPS) vs. dense diamond speed', 'M3 Max laptop vs. H20 96 GB', fig4, {
+      source: 'Matbench Discovery CPS vs. 6 Å diamond throughput (DPA4 protocol). Up and to the right is better.',
     }));
     if (dPts.length) scatter(fig4, { points: dPts, x_label: 'saturated throughput (atoms/ms, log scale, higher is better; 10 = 10,000 atoms/s)', y_label: 'Matbench Discovery CPS (higher is better)', x_unit: '' });
   }
@@ -259,8 +256,8 @@ export async function showPerf(openFull) {
     const pubWrap = el('section', { class: 'pub-section', 'aria-label': 'Published leaderboard benchmarks' },
       el('div', { class: 'perf-head perf-head-row' },
         el('div', {},
-          el('h2', { class: 'section-h' }, 'Published Benchmarks, Scaling & Hardware Comparisons'),
-          el('p', { class: 'muted' }, 'Ground-truth molecular & periodic benchmarks with explicit hardware tags on every measurement.')),
+          el('h2', { class: 'section-h' }, 'Published Benchmarks'),
+          el('p', { class: 'muted' }, 'Hardware tags appear on every chart; hover any bar or point for details.')),
         domainTabs));
     const statusBox = el('div');
     const pub = el('div', {}, el('p', { class: 'muted' }, 'Loading published numbers…'));

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 from typing import Any, Sequence
+import warnings
 
 from ase import Atoms
 import ase.units
@@ -133,6 +134,29 @@ def resolve_lot_and_u(atoms: Atoms, lot: str = "auto", u_flag: int | None = None
     else:
         raise ValueError(f"Unknown level of theory {lot!r}; valid keys: {sorted(srcs)}")
     return srcs[name], u
+
+
+def warn_if_periodic_mol_lot(calc: Any, src: Source, pbc_any: bool) -> None:
+    """Warn once per `(calc, lot)` when a non-periodic molecular LoT is evaluated under PBC."""
+    if not (pbc_any and src.domain == "molecule" and not src.pbc):
+        return
+    seen = getattr(calc, "_warned_pbc_mol_lots", None)
+    if seen is None:
+        seen = set()
+        try:
+            calc._warned_pbc_mol_lots = seen
+        except Exception:  # noqa: BLE001
+            pass
+    if src.name in seen:
+        return
+    seen.add(src.name)
+    warnings.warn(
+        f"Periodic structure (pbc=True) evaluated with non-periodic molecular LoT {src.name!r}: "
+        "long-range electrostatics, charges, dipoles, and polarization are disabled under PBC. "
+        "Use a periodic LoT ('omc25_pbe', 'matpes_r2scan', 'mp_pbe') or open boundaries (pbc=False).",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 def lot_u_atoms_for_calc(src_name: str, z_np: np.ndarray, pos_np: np.ndarray, cell_np: np.ndarray | None, pbc_flags, u_val: int) -> tuple[int, int, np.ndarray]:

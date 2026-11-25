@@ -22,18 +22,42 @@ from lam4.calc.precision_hygiene import center_positions_f64, run_safe_ase_relax
 _OPTIMIZERS = {"lbfgs": "LBFGS", "bfgs": "BFGS", "fire": "FIRE"}
 
 
+def _zero_rotation_safe(atoms: Atoms) -> None:
+    """Remove rigid-body rotation on unconstrained molecules without divide-by-zero warnings on linear systems."""
+    if bool(np.any(atoms.get_pbc())) or getattr(atoms, "constraints", None) or len(atoms) < 2:
+        return
+    ip, basis = atoms.get_moments_of_inertia(vectors=True)
+    active = ip > 1e-9
+    if bool(np.all(active)):
+        _vd.ZeroRotation(atoms)
+        return
+    if int(np.sum(active)) < 2:
+        return
+    ke0 = float(atoms.get_kinetic_energy())
+    lp = np.dot(basis, atoms.get_angular_momentum())
+    inv_ip = np.zeros_like(ip, dtype=np.float64)
+    inv_ip[active] = 1.0 / ip[active]
+    omega = np.dot(np.linalg.inv(basis), lp * inv_ip)
+    pos = atoms.get_positions() - atoms.get_center_of_mass()
+    atoms.set_velocities(atoms.get_velocities() - np.cross(omega, pos))
+    if ke0 > 0.0:
+        ke1 = float(atoms.get_kinetic_energy())
+        if ke1 > 0.0:
+            atoms.set_momenta(atoms.get_momenta() * math.sqrt(ke0 / ke1))
+
+
 def _thermalize_and_zero_com(atoms: Atoms, temperature_K: float, seed: int, remove_com: bool) -> None:
     fn = getattr(_vd, "thermalize_momenta", _vd.MaxwellBoltzmannDistribution)
     fn(atoms, temperature_K=float(temperature_K), rng=np.random.default_rng(seed))
     if remove_com and len(atoms) > 1 and not getattr(atoms, "constraints", None) and not np.allclose(atoms.get_momenta(), 0.0, atol=1e-12):
         _vd.Stationary(atoms)
         if not bool(np.any(atoms.get_pbc())):
-            _vd.ZeroRotation(atoms)
+            _zero_rotation_safe(atoms)
 
 
 def init_md_engine_state(
     atoms: Atoms, dev: torch.device, *, ensemble: str = "nvt", temperature_K: float | None = 300.0,
-    timestep_fs: float = 0.25, tdamp_fs: float = 25.0, maxwell: bool = True, seed: int = 0,
+    timestep_fs: float = 0.25, tdamp_fs: float = 25.0, maxwell: bool = True, seed: int = 0, remove_com: bool = True,
 ) -> tuple[str, Atoms, NHCState, float | None, float]:
     """Validate MD ensemble args, optionally thermalize `atoms.copy()`, and build `NHCState` on `dev`."""
     ens = str(ensemble).strip().lower()
@@ -49,7 +73,7 @@ def init_md_engine_state(
         raise ValueError("temperature_K > 0 and tdamp_fs > 0 are required when ensemble='nvt'.")
     at = atoms.copy()
     if maxwell and t_val is not None:
-        _thermalize_and_zero_com(at, t_val, seed, False) if t_val > 0.0 else at.set_momenta(np.zeros((len(at), 3), dtype=np.float64))
+        _thermalize_and_zero_com(at, t_val, seed, bool(remove_com)) if t_val > 0.0 else at.set_momenta(np.zeros((len(at), 3), dtype=np.float64))
     at_state = at.copy()
     at_state.set_positions(center_positions_f64(at.get_positions())[0])
     if ens == "nvt":

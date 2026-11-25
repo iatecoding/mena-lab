@@ -27,9 +27,11 @@ from lam4.calc.interpret import (
     MV_CM_PER_EA2,
     VA_PER_EA2,
     analyze_binding_multipoles,
+    dipole_field_ea2,
     dipole_to_debye,
     field_to_mv_cm,
     field_to_va,
+    monopole_field_ea2,
 )
 from lam4.calc.loader import load_lam4_checkpoint, resolve_lam4_config
 from lam4.calc.md_runner import can_use_md_engine, relax_atoms, run_md
@@ -59,6 +61,7 @@ __all__ = [
     "compute_gbsa",
     "compute_multipole_gbsa",
     "compute_sasa",
+    "dipole_field_ea2",
     "dipole_to_debye",
     "eval_gbsa_from_context",
     "eval_multipole_gbsa_from_context",
@@ -68,6 +71,7 @@ __all__ = [
     "get_radii",
     "harmonic_ir_raman",
     "load_lam4_checkpoint",
+    "monopole_field_ea2",
     "polarizability_tensor",
     "relax_atoms",
     "resolve_lam4_config",

@@ -8,10 +8,10 @@ Mena-Lab runs fast machine-learned interatomic potentials for molecules, crystal
 
 You can relax geometries and unit cells, run NVE/NVT/NPT molecular dynamics, compute vibrational frequencies with IR and Raman intensities, calculate crystal phonon bands and density of states, and find NEB reaction barriers. Before running a job, the app estimates runtime and memory so you know what fits on your machine.
 
-It ships three compact checkpoints (26–35 MB) that download automatically on first use and are checked by SHA-256:
-- Mena-LAM-6 (`lam6-v1`), used by default for crystals and surfaces, with optional electronic descriptors (HOMO–LUMO gap, radical character, steric overlap, and spin exchange).
-- Mena-LAM-s (`lam5-v1`), used by default for molecules, biomolecules, partial charges, dipoles, polarizabilities, and IR/Raman spectra.
-- Mena-LAM-preview (`lam-400k`), an earlier materials checkpoint kept for comparison.
+It ships three compact checkpoints (26–35 MB) that download automatically on first use and are verified by SHA-256:
+- **Mena-LAM-6 (`lam6-v1`)** — default for crystals and surfaces; multi-functional (PBE, PBE+U, r²SCAN, RPBE, PBE+D3) with optional electronic descriptors (HOMO–LUMO gap, unpaired electrons, steric overlap).
+- **Mena-LAM-s (`lam5-v1`)** — default for molecules and biomolecules; predicts partial charges, dipole, polarizability, and IR/Raman spectra.
+- **Mena-LAM-preview (`lam-400k`)** — earlier materials checkpoint kept for comparison.
 
 Everything runs on standard PyTorch with GPU acceleration on Apple Silicon and NVIDIA GPUs, and falls back cleanly to CPU without requiring a local CUDA compiler.
 
@@ -40,6 +40,7 @@ From the command line:
 ```bash
 mena sp caffeine --explain                    # energy, forces, charges, dipole & electronic descriptors
 mena relax structure.cif --fmax 0.01          # relax atomic positions and unit cell
+mena relax structure.cif --lot matpes_r2scan  # run with a specific level of theory (r²SCAN)
 mena md water_box.extxyz --temperature 300 --steps 10000
 mena vib aspirin.xyz                          # harmonic frequencies, IR and Raman spectra
 mena phonons si --supercell 3                 # phonon band structure and DOS
@@ -54,32 +55,61 @@ From Python (as an [ASE](https://wiki.fysik.dtu.dk/ase/) calculator or one-line 
 ```python
 from mena_app import calculator, singlepoint
 
-res = singlepoint("caffeine", device="auto")      # uses lam5-v1 for molecules, lam6-v1 for crystals/surfaces
-atoms.calc = calculator("lam6-v1")                # or "lam5-v1" / "lam-400k"; device="cuda" / "mps" / "cpu"
+res = singlepoint("caffeine", device="auto")           # uses lam5-v1 for molecules, lam6-v1 for crystals/surfaces
+atoms.calc = calculator("lam6-v1", lot="matpes_r2scan")  # or lot="auto" / "mp_pbe" / "oc20_rpbe" / "omol_wb97mv"
 ```
 
 ## Models
 
-| Model | Default for | Accuracy & capabilities |
+| Model | Default for | Highlights |
 |---|---|---|
-| Mena-LAM-6 (`lam6-v1`) | Crystals & surfaces | Matbench Discovery CPS 0.874, F1 0.904, thermal conductivity κ<sub>SRME</sub> 0.182 (0/103 imaginary modes); OC20/OC25/MAD-1.6 catalysis & OMC25 molecular crystals; OMol25 val 2.00 kcal/mol E, 0.40 kcal/mol/Å F; electronic descriptors via `--explain` |
-| Mena-LAM-s (`lam5-v1`) | Molecules | OMol25 held-out 1.64 kcal/mol E, 0.34 kcal/mol/Å F; PLF547 protein–ligand MAE 0.297 kcal/mol vs. CCSD(T); TorsionNet500 0.205 kcal/mol; partial charges, dipole, polarizability, IR & Raman spectra |
-| Mena-LAM-preview (`lam-400k`) | Kept for comparison | Earlier materials checkpoint; Matbench Discovery F1 0.905, CPS 0.849, κ<sub>SRME</sub> 0.307; DynaMat MD CMDS 0.787 |
+| **Mena-LAM-6 (`lam6-v1`)** | Crystals & surfaces | Matbench Discovery CPS `0.874`, F1 `0.904`, κ<sub>SRME</sub> `0.182` (0/103 imaginary modes); OC20/OC25/MAD-1.6 catalysis & OMC25 molecular crystals; electronic descriptors via `--explain` |
+| **Mena-LAM-s (`lam5-v1`)** | Molecules | OMol25 held-out `1.64 kcal/mol` E, `0.34 kcal/mol/Å` F; PLF547 protein–ligand `0.297 kcal/mol` vs. CCSD(T); TorsionNet500 `0.205 kcal/mol`; charges, dipole, polarizability, IR & Raman |
+| **Mena-LAM-preview (`lam-400k`)** | Comparison | Earlier materials checkpoint; Matbench Discovery F1 `0.905`, CPS `0.849`, κ<sub>SRME</sub> `0.307`; DynaMat MD CMDS `0.787` |
 
-By default, Mena-Lab picks `lam6-v1` for periodic structures and `lam5-v1` for molecules. You can override the default in Settings or from the CLI:
+You can change the default model per domain in **Settings** or from the CLI:
 
 ```bash
 mena models default crystal lam5-v1   # "auto" restores the default (lam6-v1)
 ```
 
-Total energies are referenced per model and functional (level of theory), so always compare energies computed with the same model and functional. When registering custom checkpoints with `mena models add`, only load files you trust.
+When registering custom checkpoints with `mena models add`, only load files you trust.
+
+## Levels of theory
+
+Each Mena-LAM checkpoint is trained across multiple DFT functionals and datasets, so a single model can reproduce different **levels of theory (LoT)** without switching weights.
+
+By default (`lot="auto"`), Mena-Lab chooses the functional from your structure:
+- **Molecules:** `omol_wb97mv` (ωB97M-V/def2-TZVPD)
+- **Bulk crystals:** `mp_pbe` or `mp_pbeU` (Materials Project PBE with MP2020 `+U` rules)
+- **Surfaces / slabs:** `oc20_rpbe` (RPBE for metal catalysis) or `PBE+U` for transition-metal oxide slabs
+
+To pick another functional explicitly:
+- **Web app:** click **Tune** in the bottom plan bar and select **Level of theory** (filtered automatically to functionals valid for your structure and model).
+- **CLI:** pass `--lot <name>` (e.g. `--lot matpes_r2scan`, `--lot oc20_rpbe`, `--lot omc25_pbe`; short aliases like `r2scan`, `rpbe`, `omc25`, `spice` also work).
+- **Python:** pass `lot="..."` to `calculator(...)` or `singlepoint(...)`.
+
+| Domain | Level of theory (`--lot`) | Reference DFT / dataset | Models |
+|---|---|---|---|
+| **Bulk crystals** | `mp_pbe`, `mp_pbeU` | PBE / PBE+U (Materials Project, PBE\_52) | `lam6-v1`, `lam5-v1`, `lam-400k` |
+| | `omat_pbe`, `omat_pbeU` | PBE / PBE+U (OMat24, PBE\_54) | `lam6-v1`, `lam-400k` |
+| | `matpes_pbe`, `matpes_r2scan` | PBE / r²SCAN (MatPES, PBE\_64) | `lam6-v1`, `lam-400k` (`r2scan` also `lam5-v1`) |
+| | `mad16_r2scan` | r²SCAN (MAD-1.6 aims\_tight) | `lam6-v1` |
+| **Surfaces & catalysis** | `oc20_rpbe`, `oc25_rpbe` | RPBE (OC20 / OC25 catalysis) | `lam6-v1` (`oc20_rpbe` also `lam5-v1`) |
+| | `oc22_pbeU` | PBE+U (OC22 oxide catalysis) | `lam5-v1` |
+| **Molecular crystals** | `omc25_pbe` | PBE+D3 (OMC25) | `lam6-v1`, `lam5-v1` |
+| **Molecules** | `omol_wb97mv` | ωB97M-V/def2-TZVPD (OMol25) | `lam5-v1`, `lam6-v1`, `lam-400k` |
+| | `spice_wb97md3` | ωB97M-D3(BJ)/def2-TZVPPD (SPICE 2) | `lam6-v1` |
+
+> [!NOTE]
+> Total energies are referenced per model and level of theory, so only compare energies computed with the same model and `--lot`. Periodic and molecular levels of theory are kept separate (use periodic functionals for crystals/slabs and molecular functionals for isolated molecules).
 
 ## Practical tips for SMILES and MD
 
-- Relax SMILES geometries first: a SMILES string generates one quick 3D force-field conformer, not a DFT minimum or conformer ensemble. Run `mena relax` before comparing energies or dipoles, and turn on "Relax first" (`--prerelax`) before starting MD from SMILES so initial steric strain does not heat up the trajectory.
-- Choosing an MD time step and thermostat: `1.0 fs` works well for relaxed organics around `300 K`; drop to `0.5 fs` above `500 K` or for stiff/strained geometries; use `2.0 fs` only for heavy-atom systems without hydrogen. The default Langevin friction (`0.01 /fs`, τ = 100 fs) is suited for production NVT; raising it to `0.05–0.1 /fs` helps damp initial strain during equilibration. Use NVE to check energy conservation.
-- Charge and spin multiplicity: formal charges and simple organic radicals (`[O-]`, `[NH4+]`, `[CH3]`) are inferred from SMILES, but set charge and spin multiplicity explicitly for diradicals (such as triplet O<sub>2</sub>), carbenes, or transition-metal complexes. Multi-fragment SMILES (`A.B`) are simulated in vacuum without a confining box.
-- Picking a model on molecules: keep Auto (`lam5-v1`) for the lowest energy/force errors and IR/Raman spectra; select `lam6-v1` explicitly on molecules if you want the HOMO–LUMO gap, unpaired-electron index, or steric overlap readout (`--explain`).
+- **Relax SMILES geometries first:** a SMILES string generates one quick 3D force-field conformer, not a DFT minimum. Run `mena relax` before comparing energies or dipoles, and enable **Relax first** (`--prerelax`) before MD from SMILES so steric strain does not heat up the trajectory.
+- **MD time step and thermostat:** `1.0 fs` works well for relaxed organics around `300 K`; drop to `0.5 fs` above `500 K` or for stiff/strained structures; use `2.0 fs` only for heavy-atom systems without hydrogen. Default Langevin friction (`0.01 /fs`, τ = 100 fs) suits production NVT; raise to `0.05–0.1 /fs` during equilibration. Use NVE to verify energy conservation.
+- **Charge and spin multiplicity:** formal charges and simple organic radicals (`[O-]`, `[NH4+]`, `[CH3]`) are inferred from SMILES, but set charge and spin multiplicity explicitly for diradicals (e.g. triplet O<sub>2</sub>), carbenes, or transition-metal complexes. Multi-fragment SMILES (`A.B`) run in vacuum without a confining box.
+- **Model choice on molecules:** keep **Auto** (`lam5-v1`) for the lowest energy/force errors and IR/Raman spectra; pick `lam6-v1` in **Tune** if you want electronic descriptors (`--explain`: HOMO–LUMO gap, unpaired-electron index, steric overlap).
 
 ## Benchmarks
 

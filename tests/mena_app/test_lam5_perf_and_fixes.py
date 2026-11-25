@@ -83,8 +83,7 @@ def test_benchmarks_json_lam5_molecules_and_architecture_status():
     assert "IR & Raman" in arch["molecules"]["body"]
     assert arch["materials"]["status"] == "active"
     assert "lam6-v1" in arch["materials"]["badge"]
-    assert "lam6-v1" in arch["materials"]["body"] and "lam-400k" in arch["materials"]["body"]
-    assert "65,895" in arch["materials"]["body"] and "64,000" in arch["materials"]["body"]
+    assert "lam-400k" in arch["materials"]["body"] and "lam5-v1" in arch["materials"]["body"]
     assert "Settings" in arch["materials"]["body"]  # how to choose alternative crystal models
 
     # Mena-LAM-s molecular section: measured numbers
