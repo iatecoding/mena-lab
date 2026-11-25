@@ -13,9 +13,9 @@ from torch import Tensor
 from lam4.calc.batched import eval_batch_frames, format_calc_summary
 from lam4.calc.loader import load_lam4_checkpoint
 from lam4.calc.physics import (
-    CRYSTAL_EV, E_ANG_TO_DEBYE, MOL_KCAL_TO_EV, _get_d3,
+    CRYSTAL_EV, E_ANG_TO_DEBYE, MOL_KCAL_TO_EV, _get_d3, auto_covalent_fragments,
     build_energy_decomposition, effective_periodic_cell, eval_dispersion_device, eval_dispersion_single,
-    polarizability_from_sums, resolve_charge_and_spin, resolve_charge_spin_fragments,
+    is_periodic_mol_electro, polarizability_from_sums, resolve_charge_and_spin, resolve_charge_spin_fragments,
     resolve_lot_and_u, warn_if_periodic_mol_lot,
 )
 from lam4.calc.multipole_pack import MULTIPOLE_PROPERTIES, append_multipole_flat_parts, unpack_multipoles_from_host, wants_multipoles
@@ -45,9 +45,10 @@ class MenaCalculator(Calculator):
         charge: float | None = None, spin: int | None = None, u_flag: int | None = None,
         lock_lot: bool = True, add_dispersion: bool = True, add_ref: bool = True,
         compute_forces: bool = True, compute_stress: bool | str = "auto", zero_net_force: bool = False,
-        interpret: bool = False, **kwargs: Any,
+        auto_fragments: str | bool = "auto", interpret: bool = False, **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        self.auto_fragments = auto_fragments
         self.interpret = bool(interpret)  # opt-in: one extra eager pass per calculate() fills results['interpretation']
         self.model, self.device, self.dtype, self.meta = load_lam4_checkpoint(
             checkpoint, device=device, dtype=dtype, precision=precision, weights=weights,
@@ -167,7 +168,7 @@ class MenaCalculator(Calculator):
             self.lot,
             self.charge_override, self.spin_override, self.u_override,
             self.add_dispersion, self.add_ref, self.zero_net_force,
-            self.compute_forces, self.compute_stress, self.precision,
+            self.compute_forces, self.compute_stress, self.precision, self.auto_fragments,
         )
 
     def check_state(self, atoms: Atoms, tol: float = 1e-15) -> list[str]:
@@ -196,16 +197,24 @@ class MenaCalculator(Calculator):
         pos_np = np.asarray(atoms.get_positions(), dtype=np.float64)
         pos_c, origin_f64 = center_positions_f64(pos_np)
         src, u_val = self._resolve_lot_cached(atoms, z_np)
-        pbc_any = bool(np.any(atoms.get_pbc()))
-        warn_if_periodic_mol_lot(self, src, pbc_any)
+        pbc_t = tuple(bool(x) for x in atoms.get_pbc())
+        pbc_any = bool(any(pbc_t))
+        raw_cell = np.asarray(atoms.cell.array, dtype=np.float64)
+        cell_valid = abs(float(np.linalg.det(raw_cell))) > 1e-8
+        pbc_elec = is_periodic_mol_electro(src, pbc_t, raw_cell)
         q_val, s_val, fid_np, fq_np, fs_np = resolve_charge_spin_fragments(
-            atoms, z_np, self.charge_override, self.spin_override, pbc_any=pbc_any, domain=src.domain,
+            atoms, z_np, self.charge_override, self.spin_override,
+            pbc_any=pbc_any, domain=src.domain, allow_pbc_charge=pbc_elec,
         )
+        frag_skip = None
+        if pbc_elec and fid_np is None:
+            fid_np, fq_np, fs_np, frag_skip = auto_covalent_fragments(atoms, q_val, mode=self.auto_fragments)
+        warn_if_periodic_mol_lot(self, src, pbc_any, pbc_flags=pbc_t, q_total=q_val, frag_skip_reason=frag_skip, cell_valid=cell_valid)
         cell_np, pbc_flags = effective_periodic_cell(atoms, self.model.cfg.r_cut) if pbc_any else (None, (False, False, False))
         ei, es, chunks = verlet_neighbor_graph(self, z_np, pos_np, cell_np, pbc_flags)
         b, ref_tup, sc = build_or_reuse_batch(
             self, z_np, pos_c, cell_np, pbc_flags, src, u_val, q_val, s_val, ei, es,
-            frag_id_np=fid_np, frag_q_np=fq_np, frag_s_np=fs_np, recenter=False,
+            frag_id_np=fid_np, frag_q_np=fq_np, frag_s_np=fs_np, recenter=False, periodic_electro=pbc_elec,
         )
         sc["origin_f64"] = origin_f64
         return b, chunks, ref_tup, sc, src, u_val, q_val, s_val, z_np, pos_c, cell_np, pbc_flags

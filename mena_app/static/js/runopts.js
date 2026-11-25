@@ -46,7 +46,9 @@ function choices(p) {
     const id = state.runtime.model || (state.plan && state.plan.decision.model);
     const m = info.models.find(x => x.id === id) || autoModel(info, dom);
     const allLots = (m && m.lots) || [];
-    const filtered = dom ? allLots.filter(l => (dom === 'molecule') === MOL_LOTS.has(l)) : allLots;
+    const filtered = dom === 'molecule'
+      ? allLots.filter(l => MOL_LOTS.has(l))
+      : (dom === 'slab' ? allLots.filter(l => !MOL_LOTS.has(l)) : allLots);
     const shown = filtered.length ? filtered : allLots;
     return [auto, ...shown.map(l => [l, lotLabel(l)])];
   }

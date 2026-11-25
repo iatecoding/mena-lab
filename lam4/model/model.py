@@ -127,8 +127,8 @@ class Lam4Model(nn.Module):
         return self.trunk.readout
 
     def check_batch(self, b: GraphBatch) -> None:
-        """Eager guard for the data pipeline (host sync): no molecule above the ExactCoulomb cap, which would silently drop its overflow atoms."""
-        if self.trunk.electro(b.domain, b.pbc):
+        """Eager guard for the data pipeline (host sync): no open molecule above the ExactCoulomb cap, which would silently drop its overflow atoms."""
+        if self.trunk.electro(b.domain, b.pbc, bool(getattr(b, "periodic_electro", False))) and not b.pbc:
             assert_capacity(b.atom_mask, b.graph, b.n_graphs, self.cfg.coulomb_cap)
 
     def group_reference(self, b: GraphBatch, domain: str | None = None) -> Tensor:

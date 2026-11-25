@@ -64,6 +64,7 @@ def pad_batch(b: GraphBatch, n_atoms: int, n_edges: int, n_graphs: int, r_cut: f
         frag_spin=None if b.frag_spin is None else cat(b.frag_spin, torch.ones(pg, **fl)),
         pbc=b.pbc,
         spme_grid=b.spme_grid,
+        periodic_electro=b.periodic_electro,
         xc_id=None if b.xc_id is None else cat(b.xc_id, torch.zeros(pg, **lg)),
         paw_id=None if b.paw_id is None else cat(b.paw_id, torch.zeros(pg, **lg)),
         u_atom=None if b.u_atom is None else cat(b.u_atom, torch.zeros(pa, **lg)),

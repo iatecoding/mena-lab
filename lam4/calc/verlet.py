@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 
 from lam4.calc.loader import crystal_e0_table_f64, molecule_ref_tables_f64
-from lam4.calc.physics import build_edge_tensors, cached_vesin_nl, center_positions_f64, lot_u_atoms_for_calc
+from lam4.calc.physics import build_edge_tensors, cached_vesin_nl, center_positions_f64, is_periodic_mol_electro, lot_u_atoms_for_calc
 from lam4.core.edge_chunks import chunks_to, make_chunks, stream_chunk_edges
 from lam4.data.batch import GraphBatch
 from lam4.data.buckets import source_ids
@@ -304,15 +304,17 @@ def build_or_reuse_batch(
     frag_q_np: np.ndarray | None = None,
     frag_s_np: np.ndarray | None = None,
     recenter: bool = True,
+    periodic_electro: bool | None = None,
 ) -> tuple[GraphBatch, tuple[float, float, np.ndarray], dict[str, Any]]:
     dev, dt = calc.device, calc.dtype
     np_dt = np.float32 if dt == torch.float32 else np.float64
     pbc_any = bool(any(pbc_flags))
+    pbc_elec = is_periodic_mol_electro(src, pbc_flags, cell_np) if periodic_electro is None else bool(periodic_electro)
     n = len(z_np)
     frag_sig = None if frag_id_np is None else (
         frag_id_np.tobytes(), None if frag_q_np is None else frag_q_np.tobytes(), None if frag_s_np is None else frag_s_np.tobytes(),
     )
-    key = (z_np.tobytes(), src.name, int(u_val), float(q_val), int(s_val), pbc_flags, calc.add_ref, frag_sig)
+    key = (z_np.tobytes(), src.name, int(u_val), float(q_val), int(s_val), pbc_flags, pbc_elec, calc.add_ref, frag_sig)
     sc = calc._static_cache
     pos_use = center_positions_f64(pos_np)[0] if recenter else pos_np
     pos_cpu = torch.from_numpy(np.ascontiguousarray(pos_use, dtype=np_dt))
@@ -383,6 +385,7 @@ def build_or_reuse_batch(
         frag_charge=frag_q_t,
         frag_spin=frag_s_t,
         pbc=pbc_any,
+        periodic_electro=pbc_elec,
     )
     ref_e = ref_energies_kcal(
         calc.add_ref, src.name, src.domain, pbc_any, z_np, q_val, s_val,

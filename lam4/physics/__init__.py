@@ -16,7 +16,9 @@ from lam4.physics.group_context import (ChargeEmbed, GroupContext, GroupReferenc
                                         load_group_tables)
 from lam4.physics.polarization import Polarization
 from lam4.physics.repulsion import Repulsion
-from lam4.physics.spme_batched import DEFAULT_GRID_BUCKETS, BatchedSPME, ScreeningGate, select_grid_bucket
+from lam4.physics.spme_batched import (
+    DEFAULT_GRID_BUCKETS, BatchedSPME, ScreeningGate, good_fft_size, select_grid_bucket, select_spme_grid,
+)
 from lam4.physics.spin_exchange import SpinExchangeHead
 from lam4.physics.sqe_pqeq import OpenMultipoleBackend, SQEPQEqHead, fragment_com_positions, register_triton_multipole_fn
 from lam4.physics.xray_eda import (EmpiricalBayesOOD, EDA_CalibHead, atomic_strain_metrics, compute_eda_forces,
@@ -27,7 +29,7 @@ __all__ = [
     "assert_capacity", "coulomb_energy", "make_slots_static", "smeared_kernel", "DensityFeedback", "FieldFeedback",
     "soft_clip_vec", "ChargeEmbed", "GroupContext", "GroupReference", "group_domain", "group_gate", "group_scalars",
     "load_group_tables", "Polarization", "Repulsion",
-    "BatchedSPME", "ScreeningGate", "DEFAULT_GRID_BUCKETS", "select_grid_bucket",
+    "BatchedSPME", "ScreeningGate", "DEFAULT_GRID_BUCKETS", "good_fft_size", "select_grid_bucket", "select_spme_grid",
     "OpenMultipoleBackend", "SQEPQEqHead", "fragment_com_positions", "register_triton_multipole_fn",
     "CloudOverlapHead", "SpinExchangeHead", "EDA_CalibHead", "EmpiricalBayesOOD", "compute_eda_forces", "hardy_edge_virial",
     "atomic_strain_metrics", "eda_term_shares_and_stability", "evaluate_sapt_ood_calibration",

@@ -63,8 +63,8 @@ atoms.calc = calculator("lam6-v1", lot="matpes_r2scan")  # or lot="auto" / "mp_p
 
 | Model | Default for | Highlights |
 |---|---|---|
-| **Mena-LAM-6 (`lam6-v1`)** | Crystals & surfaces | Matbench Discovery CPS `0.874`, F1 `0.904`, κ<sub>SRME</sub> `0.182` (0/103 imaginary modes); OC20/OC25/MAD-1.6 catalysis & OMC25 molecular crystals; electronic descriptors via `--explain` |
-| **Mena-LAM-s (`lam5-v1`)** | Molecules | OMol25 held-out `1.64 kcal/mol` E, `0.34 kcal/mol/Å` F; PLF547 protein–ligand `0.297 kcal/mol` vs. CCSD(T); TorsionNet500 `0.205 kcal/mol`; charges, dipole, polarizability, IR & Raman |
+| **Mena-LAM-6 (`lam6-v1`)** | Crystals & surfaces | Matbench Discovery CPS `0.874`, F1 `0.904`, κ<sub>SRME</sub> `0.182` (0/103 imaginary modes); X23 molecular crystals `2.28%` volume MAPE (`1.64 kcal/mol`); OC20/OC25/MAD-1.6 catalysis & OMC25; electronic descriptors via `--explain` |
+| **Mena-LAM-s (`lam5-v1`)** | Molecules | OMol25 held-out `1.64 kcal/mol` E, `0.34 kcal/mol/Å` F; PLF547 protein–ligand `0.297 kcal/mol` vs. CCSD(T); X23 molecular crystals `1.40 kcal/mol` (`2.67%` Vol MAPE) via 3D periodic SPME; TorsionNet500 `0.205 kcal/mol`; charges, dipole, polarizability, IR & Raman |
 | **Mena-LAM-preview (`lam-400k`)** | Comparison | Earlier materials checkpoint; Matbench Discovery F1 `0.905`, CPS `0.849`, κ<sub>SRME</sub> `0.307`; DynaMat MD CMDS `0.787` |
 
 You can change the default model per domain in **Settings** or from the CLI:
@@ -97,12 +97,12 @@ To pick another functional explicitly:
 | | `mad16_r2scan` | r²SCAN (MAD-1.6 aims\_tight) | `lam6-v1` |
 | **Surfaces & catalysis** | `oc20_rpbe`, `oc25_rpbe` | RPBE (OC20 / OC25 catalysis) | `lam6-v1` (`oc20_rpbe` also `lam5-v1`) |
 | | `oc22_pbeU` | PBE+U (OC22 oxide catalysis) | `lam5-v1` |
-| **Molecular crystals** | `omc25_pbe` | PBE+D3 (OMC25) | `lam6-v1`, `lam5-v1` |
-| **Molecules** | `omol_wb97mv` | ωB97M-V/def2-TZVPD (OMol25) | `lam5-v1`, `lam6-v1`, `lam-400k` |
-| | `spice_wb97md3` | ωB97M-D3(BJ)/def2-TZVPPD (SPICE 2) | `lam6-v1` |
+| **Molecular crystals & liquids** | `omc25_pbe` | PBE+D3 (OMC25) | `lam6-v1`, `lam5-v1` |
+| **Molecules & 3D periodic molecular boxes** | `omol_wb97mv` | ωB97M-V/def2-TZVPD (OMol25; 3D SPME under PBC) | `lam5-v1`, `lam6-v1`, `lam-400k` |
+| | `spice_wb97md3` | ωB97M-D3(BJ)/def2-TZVPPD (SPICE 2; 3D SPME under PBC) | `lam6-v1` |
 
 > [!NOTE]
-> Total energies are referenced per model and level of theory, so only compare energies computed with the same model and `--lot`. Periodic and molecular levels of theory are kept separate (use periodic functionals for crystals/slabs and molecular functionals for isolated molecules).
+> Total energies are referenced per model and level of theory, so only compare energies computed with the same model and `--lot`. Molecular levels of theory (`omol_wb97mv`, `spice_wb97md3`) support both isolated molecules and **3D periodic boxes** (molecular crystals, liquid water, solvated biomolecules) via 3D SPME electrostatics with automatic per-molecule fragmentation for neutral closed-shell systems; periodic boxes containing explicit counterions (e.g. Na⁺/Cl⁻) should pass per-molecule `frag_id` and `frag_charge` in Python (`atoms.arrays["frag_id"]`, `atoms.info["frag_charge"]`). Periodic crystal/surface functionals are for periodic structures only.
 
 ## Practical tips for SMILES and MD
 

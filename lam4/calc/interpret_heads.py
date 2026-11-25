@@ -84,6 +84,7 @@ def interpret_heads(calc: Any, atoms: Atoms, *, include_invalid: bool = False) -
             calc._set_compiled_active(True)
 
     periodic = bool(b.pbc)
+    pbc_elec = bool(getattr(b, "periodic_electro", False))
     ov = cap.get("overlap") if isinstance(cap.get("overlap"), dict) else None
     ex = cap.get("exchange") if torch.is_tensor(cap.get("exchange")) else None
     gap = _np(out.get("homo_gap"))
@@ -92,14 +93,15 @@ def interpret_heads(calc: Any, atoms: Atoms, *, include_invalid: bool = False) -
     raw_u_rad = _per_atom(_np(out.get("u_rad")), n)
     raw_m_raw = _per_atom(_np(out.get("m_raw")), n)
     allow_mol_only = (not periodic) or bool(include_invalid)
+    allow_mol_phys = (not periodic) or pbc_elec or bool(include_invalid)
     res: dict[str, Any] = {
         "domain": src.domain, "periodic": periodic, "lot": src.name, "charge": float(q_val), "multiplicity": int(s_val),
         "heads": hp,
         "charges_e": _per_atom(_np(out.get("charges")), n),
         "spin_density_e": _per_atom(_np(out.get("spin_density")), n),
         "stage_charges_e": [a for a in (_per_atom(_np(x), n) for x in (out.get("stage_charges") or [])) if a is not None],
-        "unpaired_u_rad": raw_u_rad if allow_mol_only else None,
-        "spin_bias_m_raw": raw_m_raw if allow_mol_only else None,
+        "unpaired_u_rad": raw_u_rad if allow_mol_phys else None,
+        "spin_bias_m_raw": raw_m_raw if allow_mol_phys else None,
         "e_pauli_atom_ev": None, "e_aniso_atom_ev": None, "e_overlap_atom_ev": None, "e_exchange_atom_ev": None,
         "quad_l2_norm": None, "homo_lumo_gap_ev": None,
         "e_network_atom_ev": _per_atom(_np(out.get("energy_atom")), n),
@@ -110,20 +112,21 @@ def interpret_heads(calc: Any, atoms: Atoms, *, include_invalid: bool = False) -
         for key, name in (("e_pauli_atom", "e_pauli_atom_ev"), ("e_aniso_atom", "e_aniso_atom_ev"), ("energy_atom", "e_overlap_atom_ev")):
             arr = _per_atom(_np(ov.get(key)), n)
             res[name] = None if arr is None else arr * to_ev
-    if ex is not None and allow_mol_only:
+    if ex is not None and allow_mol_phys:
         arr = _per_atom(_np(ex), n)
         res["e_exchange_atom_ev"] = None if arr is None else arr * to_ev
     if quad is not None and quad.shape[0] == n and float(np.abs(quad).max()) > 1e-6:
         res["quad_l2_norm"] = np.linalg.norm(quad, axis=-1)
     if gap is not None and allow_mol_only and gap.size >= 2:
         res["homo_lumo_gap_ev"] = [float(gap.reshape(-1)[0]), float(gap.reshape(-1)[1])]
+    mol_blocked = periodic and not pbc_elec
     res["head_validity"] = {
-        "charges_e": "molecule_only" if periodic else ("valid" if res["charges_e"] is not None else "unavailable"),
-        "spin_density_e": "molecule_only" if periodic else ("valid" if res["spin_density_e"] is not None else "unavailable"),
-        "unpaired_u_rad": "molecule_only" if (periodic and hp["spin_descriptor"]) else ("valid" if raw_u_rad is not None else "unavailable"),
-        "spin_bias_m_raw": "molecule_only" if (periodic and hp["spin_descriptor"]) else ("valid" if raw_m_raw is not None else "unavailable"),
+        "charges_e": "molecule_only" if mol_blocked else ("valid" if res["charges_e"] is not None else "unavailable"),
+        "spin_density_e": "molecule_only" if mol_blocked else ("valid" if res["spin_density_e"] is not None else "unavailable"),
+        "unpaired_u_rad": "molecule_only" if (mol_blocked and hp["spin_descriptor"]) else ("valid" if raw_u_rad is not None else "unavailable"),
+        "spin_bias_m_raw": "molecule_only" if (mol_blocked and hp["spin_descriptor"]) else ("valid" if raw_m_raw is not None else "unavailable"),
         "e_pauli_atom_ev": "valid" if res["e_pauli_atom_ev"] is not None else "unavailable",
-        "e_exchange_atom_ev": "molecule_only" if (periodic and hp["spin_exchange"]) else ("valid" if ex is not None else "unavailable"),
+        "e_exchange_atom_ev": "molecule_only" if (mol_blocked and hp["spin_exchange"]) else ("valid" if ex is not None else "unavailable"),
         "homo_lumo_gap_ev": "molecule_only" if (periodic and hp["homo_lumo_gap"]) else ("valid" if (gap is not None and gap.size >= 2) else "unavailable"),
         "quad_l2_norm": "valid" if res["quad_l2_norm"] is not None else "unavailable",
     }

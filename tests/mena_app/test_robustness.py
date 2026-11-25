@@ -65,8 +65,10 @@ def test_explicit_lot_beats_the_file(fake_models):
 def test_lot_must_fit_the_structure_kind_and_is_case_insensitive(fake_models):
     with pytest.raises(planner.PlanError, match="periodic"):
         planner.plan(_spec({"format": "builtin", "text": "water"}, lot="mp_pbe"))
-    with pytest.raises(planner.PlanError, match="for molecules"):
-        planner.plan(_spec({"format": "builtin", "text": "si"}, lot="omol_wb97mv"))
+    slab = bcc110("Fe", (2, 2, 3), vacuum=8.0)
+    with pytest.raises(planner.PlanError, match="2D slab"):
+        planner.plan(_spec(_xyz(slab), lot="omol_wb97mv"))
+    assert planner.plan(_spec({"format": "builtin", "text": "si"}, lot="omol_wb97mv"))["decision"]["lot"] == "omol_wb97mv"
     assert planner.plan(_spec({"format": "builtin", "text": "si"}, lot="MP_PBE"))["decision"]["lot"] == "mp_pbe"
     assert routing.canonical_lot("Mp_PbeU", LAM["lots"]) == "mp_pbeU"
 

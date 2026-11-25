@@ -95,6 +95,53 @@ def _register_spme_fft_ops() -> None:
 _register_spme_fft_ops()
 
 
+def good_fft_size(n: int, min_size: int = 8) -> int:
+    """Smallest even 2^a * 3^b * 5^c >= max(n, min_size) for fast radix-2/3/5 real FFTs."""
+    v = max(int(n), int(min_size))
+    if v % 2 != 0:
+        v += 1
+    while True:
+        m = v
+        for p in (2, 3, 5):
+            while m % p == 0:
+                m //= p
+        if m == 1:
+            return v
+        v += 2
+
+
+def select_spme_grid(cells: Tensor, spacing: float = 0.8, min_size: int = 8) -> tuple[int, int, int]:
+    """Select smooth even 2^a 3^b 5^c FFT grid for arbitrary orthorhombic or triclinic periodic cells."""
+    c_det = cells.detach()
+    if c_det.ndim == 2:
+        c_det = c_det.unsqueeze(0)
+    a, b, c = c_det.unbind(-2)
+    lengths = c_det.norm(dim=-1)
+    vol = torch.linalg.det(c_det).abs()
+    valid = vol > 1e-6
+    if not bool(valid.any()):
+        ms = good_fft_size(min_size, min_size=min_size)
+        return (ms, ms, ms)
+    areas = torch.stack(
+        (
+            torch.linalg.cross(b, c, dim=-1).norm(dim=-1),
+            torch.linalg.cross(c, a, dim=-1).norm(dim=-1),
+            torch.linalg.cross(a, b, dim=-1).norm(dim=-1),
+        ),
+        dim=-1,
+    )
+    heights = vol.unsqueeze(-1) / areas.clamp_min(1e-12)
+    # Skewness factor |a_i| / h_i (>= 1.0, == 1.0 for orthorhombic, invariant under uniform supercells).
+    skew = (lengths / heights.clamp_min(1e-6)).clamp(1.0, 2.0)
+    eff_len = (lengths * skew)[valid].max(0).values
+    req = torch.ceil(eff_len / float(spacing)).to(torch.long)
+    return (
+        good_fft_size(int(req[0]), min_size=min_size),
+        good_fft_size(int(req[1]), min_size=min_size),
+        good_fft_size(int(req[2]), min_size=min_size),
+    )
+
+
 def select_grid_bucket(cells: Tensor, spacing: float = 0.8,
                        buckets: tuple[tuple[int, int, int], ...] = DEFAULT_GRID_BUCKETS) -> tuple[int, int, int]:
     """Select the smallest static FFT grid bucket guaranteeing effective spacing <= spacing outside trace."""
@@ -132,21 +179,38 @@ def _bspline_w_dw(w: Tensor, order: int) -> tuple[Tensor, Tensor]:
     return torch.stack(theta, dim=-1), torch.stack(dtheta, dim=-1)
 
 
+def _bspline_knots_py(order: int) -> list[float]:
+    """Pure-Python fp64 cardinal B-spline knot values M_p(1..p-1) (MPS torch.compile safe: no float64 tensors)."""
+    cur = [0.0, 1.0]
+    for n in range(3, order + 1):
+        nxt = []
+        for k in range(n):
+            left = cur[k] if k < n - 1 else 0.0
+            right = cur[k - 1] if k >= 1 else 0.0
+            nxt.append((k * left + (n - k) * right) / (n - 1))
+        cur = nxt
+    return cur[1:]
+
+
 def _bspline_moduli(m: int, order: int, dtype: torch.dtype, device: torch.device) -> Tensor:
     """|b(freq)|^-2 Essmann eq. 4.4 moduli for grid size m and spline order (cached by device/dtype)."""
     can_cache = (device.type != "meta") and (not capturing()) and (not proxy_tracing()) and (not torch.compiler.is_compiling())
     key = (int(m), int(order), dtype, norm_device(device)) if can_cache else None
     if key is not None and key in _MODULI_CACHE:
         return _MODULI_CACHE[key]
-    knots = _bspline_w_dw(torch.zeros(1, dtype=torch.float64), order)[0][0]
-    mp = knots[1:]  # M_p(1..p-1)
-    idx_m = torch.arange(m, dtype=torch.float64)
-    idx_k = torch.arange(order - 1, dtype=torch.float64)
-    ang = 2.0 * math.pi * idx_m[:, None] * idx_k[None, :] / m
-    re = (mp * torch.cos(ang)).sum(-1)
-    im = (mp * torch.sin(ang)).sum(-1)
-    den = re.pow(2) + im.pow(2)
-    out = torch.where(den > 1e-10, 1.0 / den.clamp_min(1e-30), torch.zeros_like(den)).to(device=device, dtype=dtype)
+    mp = _bspline_knots_py(int(order))
+    two_pi_over_m = 2.0 * math.pi / int(m)
+    vals: list[float] = []
+    for freq in range(int(m)):
+        re = 0.0
+        im = 0.0
+        for k, mk in enumerate(mp):
+            ang = two_pi_over_m * freq * k
+            re += mk * math.cos(ang)
+            im += mk * math.sin(ang)
+        den = re * re + im * im
+        vals.append((1.0 / den) if den > 1e-10 else 0.0)
+    out = torch.tensor(vals, dtype=dtype, device=device)
     if key is not None and storable(out):
         if len(_MODULI_CACHE) >= 64:
             _MODULI_CACHE.clear()
@@ -235,9 +299,13 @@ class BatchedSPME:
             self._mesh_cache_hit = False
             eye = torch.eye(3, dtype=dt, device=dev).unsqueeze(0).expand(self.n_graphs, -1, -1)
             safe_cell = torch.where(valid_g.view(-1, 1, 1), self.cell, eye)
-            inv_64 = torch.linalg.inv(safe_cell.double())
-            self._inv_cell64 = inv_64
-            self.inv_cell = inv_64.to(dt)
+            if dev.type != "mps":
+                inv_64 = torch.linalg.inv(safe_cell.double())
+                self._inv_cell64 = inv_64
+                self.inv_cell = inv_64.to(dt)
+            else:
+                self._inv_cell64 = None
+                self.inv_cell = torch.linalg.inv(safe_cell)
             self.vol = torch.linalg.det(safe_cell).abs().clamp_min(1e-6)
             self.active_atom = self.atom_mask & valid_g.index_select(0, self.graph)
             self.af = self.active_atom.to(dt)
@@ -259,9 +327,14 @@ class BatchedSPME:
         p = self.order
         m_vec = torch.tensor((m1, m2, m3), dtype=dt, device=dev)
         inv_atom = self.inv_cell.index_select(0, self.graph)
-        # Wrap fractional coordinates modulo 1.0 in fp64 before m_vec scaling to keep full precision at +10k A shifts.
-        frac = torch.einsum("ni,nij->nj", self.pos.double(), self._inv_cell64.index_select(0, self.graph))
-        u = (frac - stop_grad(frac.floor())).to(dt) * m_vec
+        # Wrap fractional coordinates modulo 1.0 in fp64 on CPU/CUDA (keeps full precision at +10k A shifts);
+        # on Apple MPS (no float64), wrap in fp32 (calculator recenters positions around origin in fp64).
+        if self._inv_cell64 is not None:
+            frac = torch.einsum("ni,nij->nj", self.pos.double(), self._inv_cell64.index_select(0, self.graph))
+            u = (frac - stop_grad(frac.floor())).to(dt) * m_vec
+        else:
+            frac = torch.einsum("ni,nij->nj", self.pos, inv_atom)
+            u = (frac - stop_grad(frac.floor())) * m_vec
         fl = stop_grad(u.floor())
         w = u - fl
         theta, dtheta = _bspline_w_dw(w, p)  # [N, 3, p]
@@ -351,14 +424,15 @@ class BatchedSPME:
             phi_grid = grids[:, 0].reshape(-1)
             gathered = phi_grid.index_select(0, self.flat.reshape(-1)).view(self.n_atoms, -1)
             phi = ((gathered * self.wt).sum(-1) - self.k0 * qm) * self.af
-            fld = -(gathered.unsqueeze(-1) * self.grad_r_wt).sum(1)
+            fld = -torch.bmm(gathered.unsqueeze(1), self.grad_r_wt).squeeze(1)
             if pm is not None:
                 fld = fld + self.f1_0 * pm
             fld = fld * self.af.unsqueeze(-1)
             efg = None
             if need_efg:
                 efg_flat = grids[:, 1:].permute(0, 2, 3, 4, 1).reshape(-1, 5)
-                efg = (efg_flat.index_select(0, self.flat.reshape(-1)).view(self.n_atoms, -1, 5) * self.wt.unsqueeze(-1)).sum(1) * self.af.unsqueeze(-1)
+                efg_g = efg_flat.index_select(0, self.flat.reshape(-1)).view(self.n_atoms, -1, 5)
+                efg = torch.bmm(self.wt.unsqueeze(1), efg_g).squeeze(1) * self.af.unsqueeze(-1)
             return phi, fld, efg
 
     def virial_atom(self, q: Tensor, p: Tensor | None = None) -> Tensor:

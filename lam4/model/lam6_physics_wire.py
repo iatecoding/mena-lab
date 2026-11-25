@@ -141,6 +141,7 @@ def eval_lam6_physics(
     mf = b.atom_mask.to(pos.dtype)
     eff_dom = b.domain if domain is None else domain
     allow_mol = (eff_dom == "molecule") and (not b.pbc)
+    allow_exch = (eff_dom == "molecule") and ((not b.pbc) or bool(getattr(b, "periodic_electro", False)))
     already_normed = bool(cfg.state_norm)
     s_ro = t.state if (already_normed or use_ro_chunks) else state_norm(t.state)
     sn = t.state if already_normed else (state_norm(t.state) if use_ro_chunks else s_ro)
@@ -165,7 +166,7 @@ def eval_lam6_physics(
     )
     exch_needs_edges = (
         heads.exch_head is not None
-        and allow_mol
+        and allow_exch
         and (
             not can_csr_ex
             or heads.exch_head.rad_dir.weight.requires_grad
@@ -269,7 +270,7 @@ def eval_lam6_physics(
             allow_mol=True, csr_plan=t.csr_plan, cell=(b.cell if b.pbc else None),
             edge_shift=(b.edge_shift if b.pbc else None), graph=b.graph, create_graph=create_graph,
         )
-        if (heads.exch_head is not None and allow_mol)
+        if (heads.exch_head is not None and allow_exch)
         else pos.new_zeros(b.n_atoms)
     )
     quad_l2_atom = None

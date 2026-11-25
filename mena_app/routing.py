@@ -112,8 +112,8 @@ def check_lot_domain(lot: str, domain: str) -> None:
         return
     if domain == "molecule" and lot not in MOLECULAR_LOTS:
         raise RoutingError(f"{lot} is a level of theory for periodic materials; molecules use omol_wb97mv (or auto).")
-    if domain != "molecule" and lot in MOLECULAR_LOTS:
-        raise RoutingError(f"{lot} is a level of theory for molecules; {LOT_DOMAIN_TEXT[domain]} need a periodic one (or auto).")
+    if domain == "slab" and lot in MOLECULAR_LOTS:
+        raise RoutingError(f"{lot} requires either an isolated molecule or a 3D periodic cell (not a 2D slab); surfaces need a periodic level of theory (or auto).")
 
 
 def _lot(requested: str, domain: str, model: dict | None = None, analysis: dict | None = None) -> tuple[str, str]:

@@ -101,8 +101,8 @@ class Trunk(nn.Module):
         for st in self.stages:
             st.remat = mode
 
-    def electro(self, domain: str, pbc: bool = False) -> bool:
-        return domain == "molecule" and not pbc and self.cfg.long_range_molecule == "exact"
+    def electro(self, domain: str, pbc: bool = False, periodic_electro: bool = False) -> bool:
+        return domain == "molecule" and ((not pbc) or bool(periodic_electro)) and self.cfg.long_range_molecule == "exact"
 
     def _can_csr(self, pos: Tensor, edge_scale, create_graph: bool) -> bool:
         # LAM-6 O1..O9: CUDA Triton CSR bwd2 lifts the create_graph / trainable-table restrictions (double backward in-kernel).
@@ -143,8 +143,24 @@ class Trunk(nn.Module):
         return eg
 
     def _electro_backend(self, b: GraphBatch, pos: Tensor, *, create_graph: bool = False):
-        """Build per-step electrostatic backend once, caching Morton/CSR/slot metadata across Stage 0, Stage 1, and Readout."""
+        """Build per-step electrostatic backend once, caching Morton/CSR/slot/SPME metadata across Stage 0, Stage 1, and Readout."""
         cfg, mask = self.cfg, b.atom_mask
+        if b.pbc:
+            from lam4.physics.spme_batched import BatchedSPME, select_spme_grid
+
+            order = int(getattr(cfg, "mesh_order", 6))
+            spacing = float(getattr(cfg, "mesh_spacing", 0.8))
+            sym = torch.compiler.is_compiling() or proxy_tracing() or is_fake(b.cell)
+            if b.spme_grid is not None:
+                grid = b.spme_grid
+            elif not sym:
+                grid = select_spme_grid(b.cell, spacing=spacing, min_size=max(8, order))
+            else:
+                grid = (16, 16, 16)
+            return BatchedSPME(
+                pos, b.cell, b.graph, mask, b.graph_mask,
+                sigma=cfg.coulomb_sigma, grid_shape=grid, order=order, active=True,
+            )
         if cfg.sqe_pqeq or (cfg.use_l2_efg and create_graph):
             return OpenMultipoleBackend.from_batch(b, pos=pos, sigma=cfg.coulomb_sigma)
         eff_g, eff_cap = resolve_coulomb_meta(b, cfg.coulomb_cap)
@@ -208,7 +224,7 @@ class Trunk(nn.Module):
             and "_compiled_agg" not in self.stages[0].__dict__
         )
         dsum = None if use_stage0_dsum else (compute_dsum(eg, self.stages[0].edge_cfg) if need_dsum else None)
-        electro = self.electro(domain, b.pbc)
+        electro = self.electro(domain, b.pbc, bool(getattr(b, "periodic_electro", False)))
         backend = self._electro_backend(b, pos, create_graph=create_graph) if electro else None
         s = self.embed(b.z).to(w_dt) * mf.unsqueeze(-1)
         vec = s.new_zeros(b.n_atoms, cfg.k_vec, 3)
@@ -271,7 +287,7 @@ class Trunk(nn.Module):
                     m_stage.append(m_k)
             s = st.finish(s, nc, gdom)
         spin_desc = self.spin_desc_head(s, mask, normed=cfg.state_norm) if self.spin_desc_head is not None else None
-        allow_mol = (domain == "molecule") and (not b.pbc)
+        allow_mol = (domain == "molecule") and ((not b.pbc) or bool(getattr(b, "periodic_electro", False)))
         csr_base = (
             eg.mode == "csr"
             and not create_graph

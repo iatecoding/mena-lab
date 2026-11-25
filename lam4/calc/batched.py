@@ -14,8 +14,9 @@ from lam4.calc.multipole_pack import (
 )
 from lam4.calc.physics import (
     CRYSTAL_EV, E_ANG_TO_DEBYE, MOL_KCAL_TO_EV, OPEN_MOL_GPU_NL_MAX_ATOMS, _get_d3, assemble_fragment_tensors,
-    build_edge_tensors, build_energy_decomposition, build_open_mol_edges_gpu,
-    effective_periodic_cell, eval_batched_open_mol_d3, eval_dispersion_single, lot_u_atoms_for_calc, polarizability_from_sums,
+    auto_covalent_fragments, build_edge_tensors, build_energy_decomposition, build_open_mol_edges_gpu,
+    effective_periodic_cell, eval_batched_open_mol_d3, eval_dispersion_single, is_periodic_mol_electro,
+    lot_u_atoms_for_calc, polarizability_from_sums,
     resolve_charge_spin_fragments, resolve_lot_and_u, warn_if_periodic_mol_lot,
 )
 from lam4.calc.precision_hygiene import center_positions_f64, restore_charged_dipole_f64
@@ -58,6 +59,7 @@ def _eval_homogeneous_microbatch(
     atoms_list: Sequence[Atoms],
     properties: Sequence[str],
     lot_cache: dict[tuple[Any, ...], tuple[Any, int]] | None = None,
+    auto_frag_items: Sequence[tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, str | None] | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate a single homogeneous `(domain, pbc)` microbatch in ONE GPU/CPU pass."""
     if len(atoms_list) == 1 or (calc.low_memory and calc.model.trunk.edge_mode != "csr"):
@@ -70,7 +72,9 @@ def _eval_homogeneous_microbatch(
 
     lcache = {} if lot_cache is None else lot_cache
     first_src, _ = _resolve_frame_lot(calc, atoms_list[0], lcache)
-    first_pbc = bool(np.any(atoms_list[0].get_pbc()))
+    first_pbc_t = tuple(bool(x) for x in atoms_list[0].get_pbc())
+    first_pbc = bool(any(first_pbc_t))
+    first_pbc_elec = is_periodic_mol_electro(first_src, first_pbc_t, np.asarray(atoms_list[0].cell.array, dtype=np.float64))
     r_cut = float(calc.model.cfg.r_cut)
     dev, dt = calc.device, calc.dtype
     np_dt = np.float32 if dt == torch.float32 else np.float64
@@ -111,13 +115,22 @@ def _eval_homogeneous_microbatch(
     shared_u_cache: tuple[str, int, int, int, np.ndarray] | None = None
     for g_idx, at in enumerate(atoms_list):
         src, u_val = _resolve_frame_lot(calc, at, lcache)
-        pbc_any = bool(np.any(at.get_pbc()))
-        warn_if_periodic_mol_lot(calc, src, pbc_any)
+        pbc_t = tuple(bool(x) for x in at.get_pbc())
+        pbc_any = bool(any(pbc_t))
+        raw_cell = np.asarray(at.cell.array, dtype=np.float64)
+        cell_valid = abs(float(np.linalg.det(raw_cell))) > 1e-8
+        pbc_elec = is_periodic_mol_electro(src, pbc_t, raw_cell)
         z_np = z0 if same_topo else np.asarray(at.get_atomic_numbers(), dtype=np.int64)
         pos_np, origin_f64 = pos_all[g_idx]
         q_val, s_val, fid_np, fq_np, fs_np = resolve_charge_spin_fragments(
-            at, z_np, calc.charge_override, calc.spin_override, pbc_any=pbc_any, domain=src.domain,
+            at, z_np, calc.charge_override, calc.spin_override,
+            pbc_any=pbc_any, domain=src.domain, allow_pbc_charge=pbc_elec,
         )
+        frag_skip = None
+        if pbc_elec and fid_np is None:
+            cached_af = None if auto_frag_items is None else auto_frag_items[g_idx]
+            fid_np, fq_np, fs_np, frag_skip = cached_af if cached_af is not None else auto_covalent_fragments(at, q_val, mode=getattr(calc, "auto_fragments", "auto"))
+        warn_if_periodic_mol_lot(calc, src, pbc_any, pbc_flags=pbc_t, q_total=q_val, frag_skip_reason=frag_skip, cell_valid=cell_valid)
         cell_np, pbc_flags = (c0, pbc0) if same_topo else (effective_periodic_cell(at, r_cut) if pbc_any else (None, (False, False, False)))
         tok_id, ref_id = source_ids(src.name)
         if same_topo and shared_u_cache is not None and shared_u_cache[0] == src.name and shared_u_cache[1] == u_val:
@@ -162,6 +175,7 @@ def _eval_homogeneous_microbatch(
         energy_mask=torch.ones(G, dtype=torch.bool, device=dev), force_mask=torch.ones(offset, dtype=torch.bool, device=dev),
         coulomb_cap=max(int(calc.model.cfg.coulomb_cap), max_n) if (first_src.domain == "molecule" and not first_pbc) else None,
         pbc=first_pbc,
+        periodic_electro=first_pbc_elec,
         frag_id=frag_id_dev, frag_charge=frag_q_dev, frag_spin=frag_s_dev,
         xc_id=utr_t[3], paw_id=utr_t[4], u_atom=torch.cat(u_atoms).to(dev),
     )
@@ -357,19 +371,32 @@ def eval_batch_frames(
         return _eval_homogeneous_microbatch(calc, atoms_list, properties)
 
     lot_cache: dict[tuple[Any, ...], tuple[Any, int]] = {}
-    groups: dict[tuple[str, bool, bool], list[int]] = {}
+    auto_frag_cache: dict[int, tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, str | None]] = {}
+    groups: dict[tuple[str, bool, bool, bool], list[int]] = {}
     tot_atoms = 0
+    auto_mode = getattr(calc, "auto_fragments", "auto")
     for idx, at in enumerate(atoms_list):
         src, _ = _resolve_frame_lot(calc, at, lot_cache)
-        pbc_any = bool(np.any(at.get_pbc()))
+        pbc_t = tuple(bool(x) for x in at.get_pbc())
+        pbc_any = bool(any(pbc_t))
+        raw_cell = np.asarray(at.cell.array, dtype=np.float64)
+        pbc_elec = is_periodic_mol_electro(src, pbc_t, raw_cell)
         has_frag = (src.domain == "molecule") and (
             at.arrays.get("frag_id") is not None or at.info.get("frag_id") is not None
         )
-        groups.setdefault((src.domain, pbc_any, bool(pbc_any and has_frag)), []).append(idx)
+        if pbc_elec and not has_frag:
+            q_pre = float(calc.charge_override if calc.charge_override is not None else at.info.get("charge", 0.0))
+            af = auto_covalent_fragments(at, q_pre, mode=auto_mode)
+            auto_frag_cache[idx] = af
+            has_frag = af[0] is not None
+        groups.setdefault((src.domain, pbc_any, pbc_elec, bool(pbc_any and has_frag)), []).append(idx)
         tot_atoms += len(at)
 
     if len(groups) == 1 and n_tot_frames <= max_batch and tot_atoms <= max_atoms:
-        return _eval_homogeneous_microbatch(calc, atoms_list, properties, lot_cache=lot_cache)
+        return _eval_homogeneous_microbatch(
+            calc, atoms_list, properties, lot_cache=lot_cache,
+            auto_frag_items=[auto_frag_cache.get(i) for i in range(n_tot_frames)],
+        )
 
     out_all: list[dict[str, Any] | None] = [None] * n_tot_frames
     for _, indices in groups.items():
@@ -379,14 +406,20 @@ def eval_batch_frames(
         for idx in indices_sorted:
             na = len(atoms_list[idx])
             if cur_idx and (len(cur_idx) >= max_batch or cur_atoms + na > max_atoms):
-                sub_res = _eval_homogeneous_microbatch(calc, [atoms_list[j] for j in cur_idx], properties, lot_cache=lot_cache)
+                sub_res = _eval_homogeneous_microbatch(
+                    calc, [atoms_list[j] for j in cur_idx], properties, lot_cache=lot_cache,
+                    auto_frag_items=[auto_frag_cache.get(j) for j in cur_idx],
+                )
                 for j, r in zip(cur_idx, sub_res):
                     out_all[j] = r
                 cur_idx, cur_atoms = [], 0
             cur_idx.append(idx)
             cur_atoms += na
         if cur_idx:
-            sub_res = _eval_homogeneous_microbatch(calc, [atoms_list[j] for j in cur_idx], properties, lot_cache=lot_cache)
+            sub_res = _eval_homogeneous_microbatch(
+                calc, [atoms_list[j] for j in cur_idx], properties, lot_cache=lot_cache,
+                auto_frag_items=[auto_frag_cache.get(j) for j in cur_idx],
+            )
             for j, r in zip(cur_idx, sub_res):
                 out_all[j] = r
     return [r for r in out_all if r is not None]

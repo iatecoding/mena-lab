@@ -212,13 +212,15 @@ def _make_whole_model_runner(model: nn.Module, mode: str | None, backend: str | 
         energy: Tensor, forces: Tensor, energy_mask: Tensor, force_mask: Tensor,
         rp: Tensor | None, si: Tensor | None, ri: Tensor | None, sp: Tensor | None, pm: Tensor | None,
         frag_id: Tensor | None, frag_charge: Tensor | None, frag_spin: Tensor | None, xc_id: Tensor | None, paw_id: Tensor | None, u_atom: Tensor | None,
-        domain: str, pbc: bool, coulomb_cap: int | None, compute_forces: bool, compute_stress: bool, coulomb_eff_g: int | None = None,
+        domain: str, pbc: bool, coulomb_cap: int | None, compute_forces: bool, compute_stress: bool,
+        coulomb_eff_g: int | None = None, periodic_electro: bool = False, spme_grid: tuple[int, int, int] | None = None,
     ) -> dict[str, Any]:
         plan = CSRPlan(z.shape[0], si.shape[0], rp, si, ri, sp, pm) if (rp is not None and si is not None and ri is not None and sp is not None and pm is not None) else None
         batch = GraphBatch(
             z=z, pos=pos, graph=graph, cell=cell, edge_index=edge_index, edge_shift=edge_shift, charge=charge, spin=spin,
             u_flag=u_flag, token=token, ref_id=ref_id, domain=domain, atom_mask=atom_mask, graph_mask=graph_mask,
             energy=energy, forces=forces, energy_mask=energy_mask, force_mask=force_mask, coulomb_cap=coulomb_cap, pbc=pbc,
+            spme_grid=spme_grid, periodic_electro=periodic_electro,
             frag_id=frag_id, frag_charge=frag_charge, frag_spin=frag_spin, xc_id=xc_id, paw_id=paw_id, u_atom=u_atom,
         )
         if coulomb_eff_g is not None:
@@ -239,11 +241,19 @@ def _make_whole_model_runner(model: nn.Module, mode: str | None, backend: str | 
             g_res, _ = resolve_coulomb_meta(b, getattr(getattr(model, "cfg", None), "coulomb_cap", 350))
             if g_res == 1:
                 eff_g = 1
+        pbc_elec = bool(getattr(b, "periodic_electro", False))
+        grid = getattr(b, "spme_grid", None)
+        cfg = getattr(model, "cfg", None)
+        if b.pbc and grid is None and cfg is not None and (pbc_elec or getattr(cfg, "spme_batched", False)):
+            from lam4.physics.spme_batched import select_grid_bucket, select_spme_grid
+
+            sp = float(getattr(cfg, "mesh_spacing", 0.8))
+            grid = select_spme_grid(b.cell, spacing=sp, min_size=max(8, int(getattr(cfg, "mesh_order", 6)))) if pbc_elec else select_grid_bucket(b.cell, sp)
         return c_fn(
             b.z, b.pos, b.graph, b.cell, b.edge_index, b.edge_shift, b.charge, b.spin, b.u_flag, b.token, b.ref_id,
             b.atom_mask, b.graph_mask, b.energy, b.forces, b.energy_mask, b.force_mask, *ptrs,
             b.frag_id, b.frag_charge, b.frag_spin, b.xc_id, b.paw_id, b.u_atom,
-            b.domain, bool(b.pbc), None, bool(need_forces), bool(need_stress), eff_g,
+            b.domain, bool(b.pbc), None, bool(need_forces), bool(need_stress), eff_g, pbc_elec, grid,
         )
 
     cache[(mode, backend)] = _run
@@ -375,6 +385,7 @@ def _can_use_whole_model(calc: "MenaCalculator", b: GraphBatch, chunks: list | N
         not return_multipoles
         and getattr(calc, "_compiled_whole_model", None) is not None and chunks is None
         and b.n_atoms <= _max_whole_compile_atoms(calc, b.z.device)
+        and not (b.z.device.type == "mps" and b.frag_id is not None)
         and not (b.domain == "molecule" and not b.pbc and b.n_atoms > _max_mol_compile_atoms(b.z.device))
     )
 

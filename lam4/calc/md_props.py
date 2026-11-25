@@ -127,7 +127,7 @@ def collect_window_properties(eng: Any) -> dict[str, Any]:
         dip_w = buf[cur : cur + 3 * w].reshape(w, 3).copy()
         cur += 3 * w
         origin = getattr(eng, "_origin_f64", None)
-        if origin is not None and eng.qv != 0.0 and eng.model.trunk.electro(eng.src.domain, eng.pbc_any):
+        if origin is not None and eng.qv != 0.0 and eng.model.trunk.electro(eng.src.domain, eng.pbc_any, bool(getattr(eng, "periodic_electro", False))):
             dip_w = dip_w + float(eng.qv) * origin[None, :]
         dip_deb_w = dip_w * E_ANG_TO_DEBYE
         eng._prop_history.setdefault("dipole", []).append(dip_w)
@@ -145,7 +145,7 @@ def collect_window_properties(eng: Any) -> dict[str, Any]:
         pol_w = np.empty((w, 3, 3), dtype=np.float64)
         iso_w = np.empty(w, dtype=np.float64)
         aniso_w = np.empty(w, dtype=np.float64)
-        use_aniso = eng._has_aniso and (not eng.pbc_any)
+        use_aniso = eng._has_aniso and ((not eng.pbc_any) or bool(getattr(eng, "periodic_electro", False)))
         for k in range(w):
             pol_w[k], iso_w[k], aniso_w[k] = polarizability_from_sums(
                 float(ai_w[k]), aa_w[k] if use_aniso else None,
@@ -178,7 +178,7 @@ def current_dipole(eng: Any) -> np.ndarray:
         raise RuntimeError("Dipole recording not enabled; pass record_properties=('dipole', ...) to MDEngine or run().")
     dip = eng.dip.detach().cpu().to(torch.float64).numpy()
     origin = getattr(eng, "_origin_f64", None)
-    has_dip = bool(origin is not None and eng.model.trunk.electro(eng.src.domain, eng.pbc_any))
+    has_dip = bool(origin is not None and eng.model.trunk.electro(eng.src.domain, eng.pbc_any, bool(getattr(eng, "periodic_electro", False))))
     return restore_charged_dipole_f64(dip, float(getattr(eng, "qv", 0.0)), origin if origin is not None else np.zeros(3), has_dip)
 
 
@@ -189,7 +189,7 @@ def current_dipole_debye(eng: Any) -> np.ndarray:
 def current_pol_tuple(eng: Any) -> tuple[np.ndarray, float, float]:
     if not eng._want_pol:
         raise RuntimeError("Polarizability recording not enabled; pass record_properties=('polarizability', ...) to MDEngine or run().")
-    use_aniso = eng._has_aniso and (not eng.pbc_any)
+    use_aniso = eng._has_aniso and ((not eng.pbc_any) or bool(getattr(eng, "periodic_electro", False)))
     buf = torch.cat([eng.alpha_iso.view(1), eng.alpha_aniso.view(5)]).detach().cpu().to(torch.float64).numpy()
     return polarizability_from_sums(float(buf[0]), buf[1:6] if use_aniso else None)
 

@@ -341,22 +341,32 @@ def rebuild_md_buffers(eng: Any, initial: bool = False, q_np: np.ndarray | None 
         if not initial and eng.pb is not None:
             eng.stats["regrows"] += 1
             eng.graph = None
-        b, _, _ = build_or_reuse_batch(eng.calc, eng.z_np, q_np, eng.cell_np, eng.pbc, eng.src, eng.u, eng.qv, eng.sv, ei, es, recenter=False)
+        b, _, _ = build_or_reuse_batch(
+            eng.calc, eng.z_np, q_np, eng.cell_np, eng.pbc, eng.src, eng.u, eng.qv, eng.sv, ei, es,
+            frag_id_np=getattr(eng, "fid_np", None), frag_q_np=getattr(eng, "fq_np", None), frag_s_np=getattr(eng, "fs_np", None),
+            recenter=False, periodic_electro=getattr(eng, "periodic_electro", None),
+        )
         eng.e_cap = max(256, int(-(-int(max(n_e, 1) * eng.headroom) // 256) * 256))
         eng.pb = pad_batch(b, eng.n + 2, eng.e_cap, 2, eng.r_cut)
         eng.pb.coulomb_cap = None
         eng.plan = sync_padded_csr_plan(real_plan, eng.pb.edge_index, eng.n, n_e, eng.e_cap, None) if eng.is_csr else None
     else:
         if eng._retargeted:
-            b, _, _ = build_or_reuse_batch(eng.calc, eng.z_np, q_np, eng.cell_np, eng.pbc, eng.src, eng.u, eng.qv, eng.sv, ei, es, recenter=False)
+            b, _, _ = build_or_reuse_batch(
+                eng.calc, eng.z_np, q_np, eng.cell_np, eng.pbc, eng.src, eng.u, eng.qv, eng.sv, ei, es,
+                frag_id_np=getattr(eng, "fid_np", None), frag_q_np=getattr(eng, "fq_np", None), frag_s_np=getattr(eng, "fs_np", None),
+                recenter=False, periodic_electro=getattr(eng, "periodic_electro", None),
+            )
             nb = pad_batch(b, eng.n + 2, eng.e_cap, 2, eng.r_cut)
-            if eng.pb.domain != nb.domain:
-                eng.pb.domain, eng.graph = nb.domain, None
-            eng.pb.coulomb_cap = None
-            for name in ("z", "u_flag", "token", "ref_id", "charge", "spin", "xc_id", "paw_id", "u_atom", "frag_charge", "frag_spin"):
-                dst, src_t = getattr(eng.pb, name), getattr(nb, name)
-                if dst is not None and src_t is not None and dst.shape == src_t.shape:
-                    dst.copy_(src_t)
+            if eng.pb.domain != nb.domain or eng.pb.periodic_electro != nb.periodic_electro or (eng.pb.frag_id is None) != (nb.frag_id is None) or (eng.pb.frag_charge is not None and nb.frag_charge is not None and eng.pb.frag_charge.shape != nb.frag_charge.shape):
+                eng.pb, eng.graph = nb, None
+                eng.pb.coulomb_cap = None
+            else:
+                eng.pb.coulomb_cap = None
+                for name in ("z", "u_flag", "token", "ref_id", "charge", "spin", "xc_id", "paw_id", "u_atom", "frag_id", "frag_charge", "frag_spin"):
+                    dst, src_t = getattr(eng.pb, name), getattr(nb, name)
+                    if dst is not None and src_t is not None and dst.shape == src_t.shape:
+                        dst.copy_(src_t)
         _fill_md_edges(eng.pb, ei, es, eng.n, n_e, eng.e_cap)
         if eng.is_csr:
             eng.plan = sync_padded_csr_plan(real_plan, eng.pb.edge_index, eng.n, n_e, eng.e_cap, eng.plan)

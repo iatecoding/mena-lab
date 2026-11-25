@@ -9,15 +9,21 @@ import torch
 from torch import Tensor
 
 
-def resolve_charge_and_spin(atoms: Atoms, charge: float | None = None, spin: int | None = None, *, pbc_any: bool = False) -> tuple[float, int]:
+def resolve_charge_and_spin(
+    atoms: Atoms, charge: float | None = None, spin: int | None = None, *,
+    pbc_any: bool = False, allow_pbc_charge: bool = False,
+) -> tuple[float, int]:
     """Resolve scalar total `(charge, spin_multiplicity)` from `Atoms` and optional overrides."""
-    if pbc_any:
+    if pbc_any and not allow_pbc_charge:
         return 0.0, 1
     q_val = float(charge if charge is not None else atoms.info.get("charge", 0.0))
     s = spin if spin is not None else atoms.info.get("spin", atoms.info.get("multiplicity", None))
     if s is None:
-        n_elec = int(np.sum(atoms.get_atomic_numbers())) - int(round(q_val))
-        s_val = 1 if (n_elec % 2 == 0) else 2
+        if pbc_any:
+            s_val = 1
+        else:
+            n_elec = int(np.sum(atoms.get_atomic_numbers())) - int(round(q_val))
+            s_val = 1 if (n_elec % 2 == 0) else 2
     else:
         s_val = max(1, int(round(float(s))))
     return q_val, s_val
@@ -51,6 +57,7 @@ def resolve_charge_spin_fragments(
     *,
     pbc_any: bool = False,
     domain: str = "molecule",
+    allow_pbc_charge: bool = False,
 ) -> tuple[float, int, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     """Resolve total `(charge, spin)` and optional `(frag_id [N], frag_charge [F], frag_spin [F])` from `Atoms`."""
     raw_fid = atoms.arrays.get("frag_id")
@@ -62,7 +69,9 @@ def resolve_charge_spin_fragments(
     if raw_fid is None:
         if domain == "molecule" and (raw_fq is not None or raw_fs is not None):
             raise ValueError("frag_charge / frag_spin provided on Atoms without frag_id")
-        q_val, s_val = resolve_charge_and_spin(atoms, charge, spin, pbc_any=pbc_any)
+        q_val, s_val = resolve_charge_and_spin(
+            atoms, charge, spin, pbc_any=pbc_any, allow_pbc_charge=(allow_pbc_charge and domain == "molecule"),
+        )
         return q_val, s_val, None, None, None
 
     if domain == "crystal":
@@ -183,3 +192,129 @@ def assemble_fragment_tensors(
     frag_q_t = torch.from_numpy(np.ascontiguousarray(np.concatenate(fqs))).to(device=dev, dtype=dt)
     frag_s_t = torch.from_numpy(np.ascontiguousarray(np.concatenate(fss))).to(device=dev, dtype=dt)
     return frag_id_t, frag_q_t, frag_s_t
+
+
+def detect_covalent_fragments(
+    atoms: Atoms,
+    *,
+    bond_scale: float = 1.25,
+    bond_tol: float = 0.0,
+    max_cutoff: float = 4.0,
+    default_charge: float = 0.0,
+    return_meta: bool = False,
+):
+    """Detect PBC-aware covalent molecular fragments via Cordero covalent radii + BFS with shift-cycle detection.
+
+    Returns `(frag_id [N] int64, frag_charge [F] float64, frag_spin [F] int64)` with contiguous IDs `0..F-1`
+    (plus `meta` dict with `has_periodic_cycle` and `all_even_electrons` when `return_meta=True`).
+    Separates covalent bonds (e.g. O-H ~0.96 A <= 1.21 A) from H-bonds (~1.8 A) cleanly on water, X23, and ice.
+    """
+    from collections import deque
+    from ase.data import covalent_radii
+    from lam4.calc.physics import cached_vesin_nl, effective_periodic_cell
+
+    z = np.asarray(atoms.get_atomic_numbers(), dtype=np.int64)
+    n = len(z)
+    if n == 0:
+        empty = (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64), np.empty(0, dtype=np.int64))
+        return (*empty, {"has_periodic_cycle": False, "all_even_electrons": True}) if return_meta else empty
+    pos = np.asarray(atoms.get_positions(), dtype=np.float64)
+    pbc_t = tuple(bool(x) for x in atoms.get_pbc())
+    pbc_any = any(pbc_t)
+    box = effective_periodic_cell(atoms, float(max_cutoff))[0] if pbc_any else np.zeros((3, 3), dtype=np.float64)
+    rcov = np.pad(np.asarray(covalent_radii, dtype=np.float64), (0, 20), constant_values=1.5)
+    z_clip = np.clip(z, 0, len(rcov) - 1)
+    if pbc_any:
+        ii, jj, dd, ss = cached_vesin_nl(float(max_cutoff)).compute(points=pos, box=box, periodic=pbc_t, quantities="ijdS")
+        ss_a = np.asarray(ss, dtype=np.int64)
+    else:
+        ii, jj, dd = cached_vesin_nl(float(max_cutoff)).compute(points=pos, box=box, periodic=(False, False, False), quantities="ijd")
+        ss_a = None
+    ii_a, jj_a, dd_a = np.asarray(ii, dtype=np.int64), np.asarray(jj, dtype=np.int64), np.asarray(dd, dtype=np.float64)
+    thresh = float(bond_scale) * (rcov[z_clip[ii_a]] + rcov[z_clip[jj_a]]) + float(bond_tol)
+    bonded = dd_a <= thresh
+
+    adj: list[list[tuple[int, tuple[int, int, int]]]] = [[] for _ in range(n)]
+    b_i = ii_a[bonded].tolist()
+    b_j = jj_a[bonded].tolist()
+    if ss_a is not None:
+        for u, v, sh in zip(b_i, b_j, ss_a[bonded].tolist()):
+            adj[u].append((v, (int(sh[0]), int(sh[1]), int(sh[2]))))
+    else:
+        for u, v in zip(b_i, b_j):
+            adj[u].append((v, (0, 0, 0)))
+
+    fid = np.full(n, -1, dtype=np.int64)
+    disp: list[tuple[int, int, int] | None] = [None] * n
+    has_periodic_cycle = False
+    n_f = 0
+    for start in range(n):
+        if fid[start] != -1:
+            continue
+        fid[start] = n_f
+        disp[start] = (0, 0, 0)
+        q_bfs: deque[int] = deque([start])
+        while q_bfs:
+            u = q_bfs.popleft()
+            du = disp[u]
+            assert du is not None
+            for v, (sx, sy, sz) in adj[u]:
+                cand = (du[0] + sx, du[1] + sy, du[2] + sz)
+                if fid[v] == -1:
+                    fid[v] = n_f
+                    disp[v] = cand
+                    q_bfs.append(v)
+                elif disp[v] != cand:
+                    has_periodic_cycle = True
+        n_f += 1
+
+    fq = np.full(n_f, float(default_charge), dtype=np.float64)
+    z_sum = np.bincount(fid, weights=z, minlength=n_f)
+    z_int = np.rint(z_sum).astype(np.int64)
+    fs = np.array([1 + (int(z_int[f]) - int(round(fq[f]))) % 2 for f in range(n_f)], dtype=np.int64)
+    if return_meta:
+        return fid, fq, fs, {"has_periodic_cycle": has_periodic_cycle, "all_even_electrons": bool(np.all((z_int % 2) == 0))}
+    return fid, fq, fs
+
+
+def auto_covalent_fragments(
+    atoms: Atoms,
+    q_total: float,
+    mode: str | bool = "auto",
+    *,
+    bond_scale: float = 1.25,
+    bond_tol: float = 0.0,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, str | None]:
+    """Auto-detect neutral finite molecular fragments for 3D periodic molecular SPME.
+
+    Returns `(fid, fq, fs, skip_reason)` where `skip_reason` is `None` when fragments were assigned, else one of:
+    `'disabled'`, `'net_charge'`, `'periodic_network'`, `'odd_electron_fragments'`.
+    """
+    m = mode.strip().lower() if isinstance(mode, str) else mode
+    if m in (False, "false", "off", "none", "0"):
+        return None, None, None, "disabled"
+    if abs(float(q_total)) > 1e-6:
+        return None, None, None, "net_charge"
+    fid, fq, fs, meta = detect_covalent_fragments(atoms, bond_scale=bond_scale, bond_tol=bond_tol, return_meta=True)
+    if meta["has_periodic_cycle"]:
+        return None, None, None, "periodic_network"
+    if m == "auto" and not meta["all_even_electrons"]:
+        return None, None, None, "odd_electron_fragments"
+    return fid, fq, fs, None
+
+
+def assign_covalent_fragments(
+    atoms: Atoms,
+    *,
+    copy: bool = False,
+    bond_scale: float = 1.25,
+    bond_tol: float = 0.0,
+    max_cutoff: float = 4.0,
+) -> Atoms:
+    """Attach PBC-aware covalent `frag_id`, `frag_charge`, and `frag_spin` onto `atoms` (or a copy)."""
+    out = atoms.copy() if copy else atoms
+    fid, fq, fs = detect_covalent_fragments(out, bond_scale=bond_scale, bond_tol=bond_tol, max_cutoff=max_cutoff)
+    out.arrays["frag_id"] = fid
+    out.info["frag_charge"] = fq
+    out.info["frag_spin"] = fs
+    return out

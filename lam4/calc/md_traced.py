@@ -66,10 +66,16 @@ def _warm_traced_caches(model: torch.nn.Module, pb: Any) -> Any:
     if pb.domain == "molecule" and not pb.pbc:
         resolve_coulomb_meta(pb, model.cfg.coulomb_cap)
     cfg = getattr(model, "cfg", None)
-    if pb.pbc and cfg is not None and getattr(cfg, "spme_batched", False) and getattr(pb, "spme_grid", None) is None:
-        from lam4.physics.spme_batched import select_grid_bucket
+    if pb.pbc and cfg is not None and (getattr(cfg, "spme_batched", False) or getattr(pb, "periodic_electro", False)) and getattr(pb, "spme_grid", None) is None:
+        from lam4.physics.spme_batched import select_grid_bucket, select_spme_grid
 
-        return replace(pb, spme_grid=select_grid_bucket(pb.cell, float(getattr(cfg, "mesh_spacing", 0.8))))
+        spacing = float(getattr(cfg, "mesh_spacing", 0.8))
+        grid = (
+            select_spme_grid(pb.cell, spacing=spacing, min_size=max(8, int(getattr(cfg, "mesh_order", 6))))
+            if getattr(pb, "periodic_electro", False)
+            else select_grid_bucket(pb.cell, spacing)
+        )
+        return replace(pb, spme_grid=grid)
     return pb
 
 

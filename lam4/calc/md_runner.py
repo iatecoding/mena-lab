@@ -132,7 +132,7 @@ def can_use_md_engine(calc: Any, atoms: Atoms, ensemble: str = "nvt") -> tuple[b
         return False, "atoms is empty"
     if getattr(atoms, "constraints", None):
         return False, "atoms has ASE constraints"
-    if atoms.arrays.get("frag_id") is not None or atoms.info.get("frag_id") is not None:
+    if (not bool(np.any(atoms.get_pbc()))) and (atoms.arrays.get("frag_id") is not None or atoms.info.get("frag_id") is not None):
         return False, "atoms has per-fragment charges/spins (frag_id) which use ASE MD"
     rk = atoms.info.get("restraint_k", None)
     if rk is not None:

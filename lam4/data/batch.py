@@ -38,6 +38,7 @@ class GraphBatch:
     pbc: bool = False          # one value per batch (sources fix it): periodic cells. Open-boundary physics (ExactCoulomb, whole-graph group
                                # context) is never applied to a periodic batch; group physics on pbc needs finite fragments (frag_id)
     spme_grid: tuple[int, int, int] | None = None  # optional static FFT grid bucket for traced periodic BatchedSPME
+    periodic_electro: bool = False                 # True when a molecular LoT (omol_wb97mv, spice_wb97md3, ...) runs 3D SPME under PBC; False for omc25_pbe & crystals
     xc_id: torch.Tensor | None = None              # [G] long, factorized XC functional id (defaults to token when None)
     paw_id: torch.Tensor | None = None             # [G] long, factorized PAW/basis id (0 = vasp_pbe52 when None)
     u_atom: torch.Tensor | None = None             # [N] long, per-atom Hubbard +U bit (0/1)

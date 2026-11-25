@@ -17,8 +17,8 @@ from lam4.calc.md_nhc import get_fused_nhc_steps, integrate_nhc
 from lam4.calc import md_props as _mdp
 from lam4.calc.md_runner import init_md_engine_state, retarget_md_engine, sync_md_atoms
 from lam4.calc.physics import (
-    CRYSTAL_EV, MOL_KCAL_TO_EV, center_positions_f64, effective_periodic_cell,
-    resolve_charge_and_spin, resolve_lot_and_u, warn_if_periodic_mol_lot,
+    CRYSTAL_EV, MOL_KCAL_TO_EV, auto_covalent_fragments, center_positions_f64, effective_periodic_cell,
+    is_periodic_mol_electro, resolve_charge_and_spin, resolve_charge_spin_fragments, resolve_lot_and_u, warn_if_periodic_mol_lot,
 )
 from lam4.calc.runtime import _max_mol_compile_atoms, _max_whole_compile_atoms, get_md_compiled_runner, precision_context
 from lam4.calc.verlet import warm_calc_caches
@@ -110,16 +110,25 @@ class MDEngine:
         self.z_np = np.asarray(self.atoms.get_atomic_numbers(), dtype=np.int64)
         self.pbc_any = bool(np.any(self.atoms.get_pbc()))
         self.src, self.u = calc._resolve_lot_cached(self.atoms, self.z_np) if hasattr(calc, "_resolve_lot_cached") else resolve_lot_and_u(self.atoms, calc.lot, calc.u_override)
-        if self.src.domain == "molecule" and (self.atoms.arrays.get("frag_id") is not None or self.atoms.info.get("frag_id") is not None):
+        if self.src.domain == "molecule" and (not self.pbc_any) and (self.atoms.arrays.get("frag_id") is not None or self.atoms.info.get("frag_id") is not None):
             raise ValueError("MDEngine does not support per-fragment charges/spins (frag_id); use calc.run_md(...) (ASE fallback).")
-        warn_if_periodic_mol_lot(calc, self.src, self.pbc_any)
-        self.qv, self.sv = resolve_charge_and_spin(self.atoms, calc.charge_override, calc.spin_override, pbc_any=self.pbc_any)
+        pbc_t = tuple(bool(x) for x in self.atoms.get_pbc())
+        raw_cell = np.asarray(self.atoms.cell.array, dtype=np.float64)
+        self.periodic_electro = is_periodic_mol_electro(self.src, pbc_t, raw_cell)
+        self.qv, self.sv, self.fid_np, self.fq_np, self.fs_np = resolve_charge_spin_fragments(
+            self.atoms, self.z_np, calc.charge_override, calc.spin_override,
+            pbc_any=self.pbc_any, domain=self.src.domain, allow_pbc_charge=self.periodic_electro,
+        )
+        frag_skip = None
+        if self.periodic_electro and self.fid_np is None:
+            self.fid_np, self.fq_np, self.fs_np, frag_skip = auto_covalent_fragments(self.atoms, self.qv, mode=getattr(calc, "auto_fragments", "auto"))
+        warn_if_periodic_mol_lot(calc, self.src, self.pbc_any, pbc_flags=pbc_t, q_total=self.qv, frag_skip_reason=frag_skip, cell_valid=(abs(float(np.linalg.det(raw_cell))) > 1e-8))
         self.cell_np, self.pbc = effective_periodic_cell(self.atoms, self.r_cut) if self.pbc_any else (None, (False, False, False))
         self.can_stress = bool(self.pbc_any and all(self.pbc) and self.cell_np is not None and abs(float(np.linalg.det(self.cell_np))) > 1e-8)
         self.kcal_to_ev = (1.0 / CRYSTAL_EV) if self.src.domain == "crystal" else MOL_KCAL_TO_EV
         self.d3_mode = self.src.d3_addback if calc.add_dispersion else None
         self._d3_g0 = torch.zeros(self.n, dtype=torch.long, device=self.dev) if not self.pbc_any else None
-        e0, eqs, _ = calc._ref_energies_kcal(self.src.name, self.src.domain, self.pbc_any, self.z_np, self.qv, self.sv)
+        e0, eqs, _ = calc._ref_energies_kcal(self.src.name, self.src.domain, self.pbc_any, self.z_np, self.qv, self.sv, frag_charge=self.fq_np, frag_spin=self.fs_np)
         self.e_ref_kcal = float(e0 + eqs)
 
         need_csr_chk = bool(calc.model.trunk.edge_mode == "csr" and calc.csr_check and not calc._csr_checked)
@@ -231,14 +240,20 @@ class MDEngine:
             prev_sig = (self.src.domain, self.d3_mode)
             self.z_np = np.asarray(atoms.get_atomic_numbers(), dtype=np.int64)
             self.src, self.u = self.calc._resolve_lot_cached(atoms, self.z_np) if hasattr(self.calc, "_resolve_lot_cached") else resolve_lot_and_u(atoms, self.calc.lot, self.calc.u_override)
-            self.qv, self.sv = resolve_charge_and_spin(atoms, self.calc.charge_override, self.calc.spin_override, pbc_any=self.pbc_any)
+            self.periodic_electro = is_periodic_mol_electro(self.src, tuple(bool(x) for x in atoms.get_pbc()), np.asarray(atoms.cell.array, dtype=np.float64))
+            self.qv, self.sv, self.fid_np, self.fq_np, self.fs_np = resolve_charge_spin_fragments(
+                atoms, self.z_np, self.calc.charge_override, self.calc.spin_override,
+                pbc_any=self.pbc_any, domain=self.src.domain, allow_pbc_charge=self.periodic_electro,
+            )
+            if self.periodic_electro and self.fid_np is None:
+                self.fid_np, self.fq_np, self.fs_np, _ = auto_covalent_fragments(atoms, self.qv, mode=getattr(self.calc, "auto_fragments", "auto"))
             self.kcal_to_ev = (1.0 / CRYSTAL_EV) if self.src.domain == "crystal" else MOL_KCAL_TO_EV
             self.d3_mode = self.src.d3_addback if self.calc.add_dispersion else None
             if self._d3_g0 is None and not self.pbc_any:
                 self._d3_g0 = torch.zeros(self.n, dtype=torch.long, device=self.dev)
             if (self.src.domain, self.d3_mode) != prev_sig or (self.d3_mode is not None and not self.can_graph_d3()):
                 self.graph = None
-            e0, eqs, _ = self.calc._ref_energies_kcal(self.src.name, self.src.domain, self.pbc_any, self.z_np, self.qv, self.sv)
+            e0, eqs, _ = self.calc._ref_energies_kcal(self.src.name, self.src.domain, self.pbc_any, self.z_np, self.qv, self.sv, frag_charge=self.fq_np, frag_spin=self.fs_np)
             self.e_ref_kcal, self._retargeted = float(e0 + eqs), True
         if temperature_K is not None or timestep_fs is not None or tdamp_fs is not None:
             retarget_md_engine(self, temperature_K=temperature_K, timestep_fs=timestep_fs, tdamp_fs=tdamp_fs)
@@ -300,6 +315,7 @@ class MDEngine:
                 self._traced_mode = self._traced_ff = None
         use_c = (
             self._compiled_runner is not None and (self.is_csr or self.dev.type == "cpu") and self.pb.n_atoms <= _max_whole_compile_atoms(self.calc, self.dev)
+            and not (self.dev.type == "mps" and self.pb.frag_id is not None)
             and not (self.pb.domain == "molecule" and not self.pb.pbc and self.pb.n_atoms > _max_mol_compile_atoms(self.dev))
         )
         with precision_context(getattr(self.calc, "precision", "auto"), self.dev, self.model), torch.enable_grad():

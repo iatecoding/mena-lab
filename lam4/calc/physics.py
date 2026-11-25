@@ -19,7 +19,8 @@ from lam4.registry import CRYSTAL, LAM6_LOT_SPECS, XC_ID, build_sources
 from lam4.registry.sources import Source, lot_ids
 
 from lam4.calc.fragments import (  # noqa: F401
-    _parse_frag_dict_keys, assemble_fragment_tensors, resolve_charge_and_spin, resolve_charge_spin_fragments,
+    _parse_frag_dict_keys, assemble_fragment_tensors, assign_covalent_fragments, auto_covalent_fragments,
+    detect_covalent_fragments, resolve_charge_and_spin, resolve_charge_spin_fragments,
 )
 from lam4.calc.open_mol_gpu import (  # noqa: F401
     OPEN_MOL_GPU_D3_CSR_MAX_ATOMS, OPEN_MOL_GPU_NL_MAX_ATOMS, build_open_mol_edges_gpu, eval_batched_open_mol_d3,
@@ -136,8 +137,31 @@ def resolve_lot_and_u(atoms: Atoms, lot: str = "auto", u_flag: int | None = None
     return srcs[name], u
 
 
-def warn_if_periodic_mol_lot(calc: Any, src: Source, pbc_any: bool) -> None:
-    """Warn once per `(calc, lot)` when a non-periodic molecular LoT is evaluated under PBC."""
+def is_periodic_mol_electro(
+    src: Source,
+    pbc_flags: Sequence[bool] | np.ndarray,
+    cell: np.ndarray | None = None,
+) -> bool:
+    """Return True when a non-periodic molecular LoT (`omol_wb97mv`, `spice_wb97md3`, ...) runs 3D SPME under full 3D PBC."""
+    pbc_t = tuple(bool(x) for x in pbc_flags)
+    if not (src.domain == "molecule" and (not src.pbc) and len(pbc_t) == 3 and all(pbc_t)):
+        return False
+    if cell is not None and abs(float(np.linalg.det(np.asarray(cell, dtype=np.float64)))) <= 1e-8:
+        return False
+    return True
+
+
+def warn_if_periodic_mol_lot(
+    calc: Any,
+    src: Source,
+    pbc_any: bool,
+    *,
+    pbc_flags: Sequence[bool] | np.ndarray | None = None,
+    q_total: float = 0.0,
+    frag_skip_reason: str | None = None,
+    cell_valid: bool = True,
+) -> None:
+    """Warn once per `(calc, lot, kind)` when a non-periodic molecular LoT is evaluated under PBC."""
     if not (pbc_any and src.domain == "molecule" and not src.pbc):
         return
     seen = getattr(calc, "_warned_pbc_mol_lots", None)
@@ -147,16 +171,66 @@ def warn_if_periodic_mol_lot(calc: Any, src: Source, pbc_any: bool) -> None:
             calc._warned_pbc_mol_lots = seen
         except Exception:  # noqa: BLE001
             pass
-    if src.name in seen:
+    pbc_t = None if pbc_flags is None else tuple(bool(x) for x in pbc_flags)
+    is_full_3d = True if pbc_t is None else (len(pbc_t) == 3 and all(pbc_t))
+    if is_full_3d and not cell_valid:
+        dkey = (src.name, "degenerate_cell")
+        if dkey not in seen:
+            seen.add(dkey)
+            warnings.warn(
+                f"Degenerate or zero cell (|det(cell)| <= 1e-8) with pbc=True evaluated with non-periodic molecular LoT {src.name!r}: "
+                "3D SPME electrostatics are disabled to avoid running on a fabricated box. "
+                "Supply a valid non-singular 3x3 cell or use open boundaries (pbc=False).",
+                UserWarning,
+                stacklevel=3,
+            )
         return
-    seen.add(src.name)
-    warnings.warn(
-        f"Periodic structure (pbc=True) evaluated with non-periodic molecular LoT {src.name!r}: "
-        "long-range electrostatics, charges, dipoles, and polarization are disabled under PBC. "
-        "Use a periodic LoT ('omc25_pbe', 'matpes_r2scan', 'mp_pbe') or open boundaries (pbc=False).",
-        UserWarning,
-        stacklevel=3,
-    )
+    if is_full_3d:
+        key = (src.name, "3d")
+        if key not in seen:
+            seen.add(key)
+            warnings.warn(
+                f"Periodic structure (pbc=True) evaluated with non-periodic molecular LoT {src.name!r}: "
+                "using zero-retrain 3D SPME long-range electrostatics (tin-foil k=0). "
+                "For native periodic DFT, use a periodic LoT ('omc25_pbe', 'matpes_r2scan', 'mp_pbe').",
+                UserWarning,
+                stacklevel=3,
+            )
+        if abs(float(q_total)) > 1e-6:
+            ckey = (src.name, "charged")
+            if ckey not in seen:
+                seen.add(ckey)
+                warnings.warn(
+                    f"Net-charged periodic cell (Q={float(q_total):+.3f} e) evaluated with molecular LoT {src.name!r} "
+                    "under 3D SPME: k=0 mode is zeroed (uniform neutralizing jellium background). "
+                    "Total energy and stress depend on cell volume; use a neutral cell for physical condensed-phase energies.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+        if frag_skip_reason is not None:
+            fkey = (src.name, "nofrag", frag_skip_reason)
+            if fkey not in seen:
+                seen.add(fkey)
+                warnings.warn(
+                    f"Periodic molecular LoT {src.name!r} running without per-molecule frag_id ({frag_skip_reason}): "
+                    "GroupContext and (Q, S) conditioning are OFF, which can cause large OOD energy shifts or charge runaway "
+                    "on existing molecular checkpoints. Supply explicit atoms.arrays['frag_id'] and atoms.info['frag_charge'] "
+                    "(or enable auto_fragments='auto' for neutral finite-molecule cells).",
+                    UserWarning,
+                    stacklevel=3,
+                )
+    else:
+        pkey = (src.name, "partial")
+        if pkey not in seen:
+            seen.add(pkey)
+            warnings.warn(
+                f"Partial-PBC structure (pbc={pbc_t}) evaluated with non-periodic molecular LoT {src.name!r}: "
+                "3D SPME electrostatics require full 3D PBC (pbc=(True, True, True)); long-range electrostatics "
+                "are disabled to avoid spurious periodic image interactions. Use full 3D PBC, open boundaries "
+                "(pbc=False), or a periodic slab LoT ('oc25_rpbe', 'mp_pbe').",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 def lot_u_atoms_for_calc(src_name: str, z_np: np.ndarray, pos_np: np.ndarray, cell_np: np.ndarray | None, pbc_flags, u_val: int) -> tuple[int, int, np.ndarray]:
