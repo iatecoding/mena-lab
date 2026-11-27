@@ -2,7 +2,7 @@
 
 # Mena-Lab
 
-> I am an ML student. I used my personal resources (money and time) and ran multiple iterations to reach this level. I hope this is in some ways beneficial to the field and to the community. Give me your feedback.
+> I am a student, I used my personal resources (money and time) and ran multiple iterations to reach this level. I hope this is in some ways beneficial to the field and to the community. Keep an open minded and proactive approach testing this, open to feedbacks. Leave a star if you liked this
 
 Mena-Lab runs fast machine-learned interatomic potentials for molecules, crystals, and surfaces on your own computer (Windows, macOS, Linux; CPU, NVIDIA GPU, or Apple Silicon). It includes a local web app, a command-line interface, and an ASE-compatible Python API.
 
