@@ -365,6 +365,7 @@ def analyze_binding_multipoles(
         q_grp = q_cpx_l[idx_arr]
         grp_dip_deb = float(np.linalg.norm(dipole_to_debye(np.sum(q_grp[:, None] * (r_grp - r_grp.mean(axis=0, keepdims=True)) + p_cpx_l[idx_arr], axis=0))))
         e_al = float(np.sum(e_align_kcal[idx_arr]))
+        e_al_tot = float(np.sum(e_align_tot_kcal[idx_arr]))
         ddg_g = float(np.sum(ddg_gb_at[idx_arr]))
         fg_list.append({
             "name": gname, "atom_indices_lig": idxs, "atom_indices_cpx": [int(lig_idx[k]) for k in idxs],
@@ -376,11 +377,13 @@ def analyze_binding_multipoles(
             "mean_E_tot_mv_cm": float(np.mean(e_tot_norm_mv_cm[idx_arr])),
             "max_E_tot_mv_cm": float(np.max(e_tot_norm_mv_cm[idx_arr])),
             "mean_E_tot_point_mv_cm": float(np.mean(e_tot_pt_norm_mv_cm[idx_arr])),
-            "E_align_kcal": e_al, "E_align_tot_kcal": float(np.sum(e_align_tot_kcal[idx_arr])),
+            "E_align_kcal": e_al, "E_align_tot_kcal": e_al_tot,
             "ddg_solv_atom_kcal": float(np.sum(ddg_solv_at[idx_arr])),
             "ddg_gb_atom_kcal": ddg_g, "ddg_mono_atom_kcal": float(np.sum(ddg_mono_at[idx_arr])),
-            "ddg_dip_atom_kcal": float(np.sum(ddg_dip_at[idx_arr])), "net_elec_score_kcal": e_al + ddg_g,
-            "status": "stabilizing" if e_al < -0.25 else ("frustrated" if e_al > 0.25 else "neutral"),
+            "ddg_dip_atom_kcal": float(np.sum(ddg_dip_at[idx_arr])),
+            "net_elec_score_mono_kcal": e_al + ddg_g, "net_elec_score_kcal": e_al_tot + ddg_g,
+            "status_mono": "stabilizing" if e_al < -0.25 else ("frustrated" if e_al > 0.25 else "neutral"),
+            "status": "stabilizing" if e_al_tot < -0.25 else ("frustrated" if e_al_tot > 0.25 else "neutral"),
         })
 
     return {

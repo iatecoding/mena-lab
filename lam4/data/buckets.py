@@ -127,14 +127,25 @@ def pack_molecules(src: OmolSource, cap: int, pos: np.ndarray, *, n_pad: int | N
     n = int(nk.sum())
     sn = sl.cpu().numpy() if torch.is_tensor(sl) else sl
     f2 = torch.from_numpy(d["forces"][sn]).to(**fl)
+    f_real = f2[mask2]
+    if not getattr(src, "has_forces", True):
+        f_mask = torch.zeros(n, dtype=torch.bool, device=device)
+        f_real = torch.zeros_like(f_real)
+    elif "force_mask" in d:
+        fm2 = torch.from_numpy(d["force_mask"][sn]).to(device=device, dtype=torch.bool)
+        f_mask = fm2[mask2] & torch.isfinite(f_real).all(dim=-1)
+        f_real = torch.where(f_mask.unsqueeze(-1), f_real, torch.zeros_like(f_real))
+    else:
+        f_mask = torch.isfinite(f_real).all(dim=-1)
+        f_real = torch.where(f_mask.unsqueeze(-1), f_real, torch.zeros_like(f_real))
     b = GraphBatch(
         z=z2[mask2], pos=p2[mask2], graph=torch.repeat_interleave(torch.arange(used, device=device), nk), cell=torch.zeros(used, 3, 3, **fl),
         edge_index=edges_from_mask(m, nk), edge_shift=torch.zeros(int(m.sum()), 3, **fl),
         charge=torch.from_numpy(d["charge"][sn]).to(**fl), spin=torch.from_numpy(d["spin"][sn]).to(**fl),
         u_flag=torch.zeros(used, dtype=torch.long, device=device), token=torch.full((used,), tok, dtype=torch.long, device=device),
         ref_id=torch.full((used,), ref, dtype=torch.long, device=device), domain="molecule", atom_mask=torch.ones(n, dtype=torch.bool, device=device),
-        graph_mask=torch.ones(used, dtype=torch.bool, device=device), energy=torch.from_numpy(d["energy"][sn]).to(**fl), forces=f2[mask2],
-        energy_mask=torch.ones(used, dtype=torch.bool, device=device), force_mask=torch.ones(n, dtype=torch.bool, device=device), coulomb_cap=cap, pbc=False,
+        graph_mask=torch.ones(used, dtype=torch.bool, device=device), energy=torch.from_numpy(d["energy"][sn]).to(**fl), forces=f_real,
+        energy_mask=torch.ones(used, dtype=torch.bool, device=device), force_mask=f_mask, coulomb_cap=cap, pbc=False,
         xc_id=torch.full((used,), xc_i, dtype=torch.long, device=device),
         paw_id=torch.full((used,), paw_i, dtype=torch.long, device=device),
         u_atom=torch.zeros(n, dtype=torch.long, device=device))

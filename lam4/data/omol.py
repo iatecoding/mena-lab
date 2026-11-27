@@ -161,6 +161,7 @@ class OmolSource:
         self.paw_basis = str(cfg["paw"])
         self.xc_id = int(XC_ID[self.xc])
         self.paw_id = int(PAW_ID[self.paw_basis])
+        self.has_forces = bool(flat.manifest.get("has_forces", True))
         strip_d3 = bool(cfg["d3_strip"]) if d3_strip is None else bool(d3_strip)
         self.edges = tuple(int(e) for e in edges)
         if indices is None:
@@ -275,9 +276,14 @@ class OmolSource:
         z = np.zeros((k, cap), np.int64)
         p = np.zeros((k, cap, 3), np.float32)
         f = np.zeros((k, cap, 3), np.float32)
+        f_mask = np.zeros((k, cap), dtype=bool)
         z[valid] = np.asarray(self.flat.z[atoms])
         p[valid] = np.asarray(self.flat.pos[atoms])
-        f[valid] = np.asarray(self.flat.forces[atoms], np.float32) - self.d3_f[d3_atoms]
+        if self.has_forces:
+            f_raw = np.asarray(self.flat.forces[atoms], np.float32) - self.d3_f[d3_atoms]
+            fin = np.isfinite(f_raw).all(axis=-1)
+            f_mask[valid] = fin
+            f[valid] = np.where(fin[:, None], f_raw, 0.0)
         dip = np.full((k, 3), np.nan, np.float32) if self.dipole is None else self.dipole[pos]
         spins_low = np.full((k, cap), np.nan, np.float32)
         if self._spins_lowdin is not None:
@@ -286,7 +292,7 @@ class OmolSource:
         if self._frag_id_545 is not None:
             frag_id[valid] = np.asarray(self._frag_id_545[atoms], np.uint8)
         return {
-            "z": z, "pos": p, "forces": f, "n": n, "energy": self.e_res[pos], "charge": self.charge[pos], "spin": self.spin[pos], "dipole": dip,
+            "z": z, "pos": p, "forces": f, "force_mask": f_mask, "n": n, "energy": self.e_res[pos], "charge": self.charge[pos], "spin": self.spin[pos], "dipole": dip,
             "spins_lowdin": spins_low, "frag_id_545": frag_id,
             "unrestricted": np.full(k, 255, np.uint8) if self._unrestricted is None else np.asarray(self._unrestricted[rows], np.uint8),
             "s_squared_dev": np.full(k, np.nan, np.float32) if self._s_squared_dev is None else np.asarray(self._s_squared_dev[rows], np.float32),

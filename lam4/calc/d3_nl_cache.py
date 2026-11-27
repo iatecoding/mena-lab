@@ -181,6 +181,30 @@ def _build_raw_d3_csr(
     return rp, send_i32, shift_f32
 
 
+def _periodic_cache_valid(
+    c: dict[str, Any], pos_np: np.ndarray, c_arr: np.ndarray,
+    pbc_flags: tuple[bool, bool, bool], r_cut: float, eff_skin: float,
+) -> bool:
+    cell0 = c["cell0"]
+    pos0 = c["pos0"]
+    if np.allclose(c_arr, cell0, atol=1e-12, rtol=0.0):
+        return float(np.max(np.sum((pos_np - pos0) ** 2, axis=1), initial=0.0)) < (0.5 * eff_skin) ** 2
+    if not all(pbc_flags):
+        return False
+    if abs(float(np.linalg.det(cell0))) <= 1e-8 or abs(float(np.linalg.det(c_arr))) <= 1e-8:
+        return False
+    def_grad = np.linalg.solve(cell0, c_arr)
+    s_min = float(np.linalg.svd(def_grad, compute_uv=False)[-1])
+    margin = s_min * (float(r_cut) + eff_skin) - float(r_cut) - 1.0e-6
+    if margin <= 0.0:
+        return False
+    u = pos_np - pos0 @ def_grad
+    if len(u) > 0:
+        u = u - u.mean(axis=0, keepdims=True)
+    max_u2 = float(np.max(np.sum(u * u, axis=1), initial=0.0))
+    return (4.0 * max_u2) < (margin * margin)
+
+
 def d3_csr_periodic_list(
     z_np: np.ndarray, pos_np: np.ndarray, cell_np: np.ndarray | None, pbc_flags: tuple[bool, bool, bool],
     r_cut: float, device: torch.device, *, skin: float = SKIN,
@@ -193,8 +217,8 @@ def d3_csr_periodic_list(
     if (
         eff_skin > 0.0 and c.get("n") == n and c.get("device") == device
         and c.get("r_cut") == r_cut and c.get("skin") == eff_skin and c.get("pbc") == pbc_flags
-        and np.array_equal(c["z"], z_np) and np.allclose(c_arr, c["cell0"], atol=1e-12, rtol=0.0)
-        and float(np.max(np.sum((pos_np - c["pos0"]) ** 2, axis=1), initial=0.0)) < (0.5 * eff_skin) ** 2
+        and np.array_equal(c["z"], z_np)
+        and _periodic_cache_valid(c, pos_np, c_arr, pbc_flags, r_cut, eff_skin)
     ):
         return c["rp"], c["send"], c["shift"]
     rp, send_i32, shift_f32 = _build_raw_d3_csr(n, pos_np, c_arr, pbc_flags, float(r_cut) + eff_skin, device)
@@ -213,10 +237,11 @@ def sync_padded_d3_csr(
     n: int, pos_np: np.ndarray, cell_np: np.ndarray | None, pbc_flags: tuple[bool, bool, bool],
     skin: float, headroom: float, device: torch.device,
     cur_cap: int, d3_rp: Tensor | None, d3_send: Tensor | None, d3_shift: Tensor | None,
+    *, r_cut: float = 12.0,
 ) -> tuple[int, Tensor, Tensor, Tensor | None, bool]:
     """Build or update static-padded `(d3_rp [n+3], d3_send [cap], d3_shift [cap,3]|None)` with 0 pad-atom edges (`d3_rp[n:] = e0`)."""
     pbc_any = any(pbc_flags)
-    rp_r, send_r, shift_r = _build_raw_d3_csr(n, pos_np, cell_np, pbc_flags, 12.0 + float(skin), device)
+    rp_r, send_r, shift_r = _build_raw_d3_csr(n, pos_np, cell_np, pbc_flags, float(r_cut) + float(skin), device)
     e0 = int(send_r.numel())
     regrew = d3_rp is None or d3_send is None or e0 > cur_cap
     if regrew:
@@ -309,6 +334,30 @@ def _fill_md_edges(pb: Any, ei: Tensor, es: Tensor, n: int, n_e: int, e_cap: int
         pb.edge_shift[n_e:].zero_()
 
 
+def _sync_md_d3_csr(eng: Any, initial: bool, q_np: np.ndarray | None) -> None:
+    need_csr_d3 = (
+        eng.d3_mode is not None
+        and (
+            (eng.can_graph_d3() and (eng.pbc_any or eng.n > 2048))
+            or (getattr(eng, "can_metal_d3", lambda: False)() and (eng.pbc_any or eng.n > 1024))
+        )
+    )
+    if not need_csr_d3:
+        return
+    from lam4.kernels.metal_d3 import d3_cutoff_for_mode
+
+    pos_host = eng.st.q.detach().cpu().numpy() if q_np is None else q_np
+    prev_d3_cap = eng.d3_e_cap
+    eng.d3_e_cap, eng.d3_rp, eng.d3_send, eng.d3_shift, regrew = sync_padded_d3_csr(
+        eng.n, pos_host, eng.cell_np, eng.pbc, eng.skin, eng.headroom, eng.dev,
+        eng.d3_e_cap, eng.d3_rp, eng.d3_send, eng.d3_shift,
+        r_cut=d3_cutoff_for_mode(eng.d3_mode),
+    )
+    if regrew and not initial and prev_d3_cap > 0:
+        eng.stats["regrows"] += 1
+        eng.graph = None
+
+
 def rebuild_md_buffers(eng: Any, initial: bool = False, q_np: np.ndarray | None = None) -> None:
     """Rebuild Verlet edges, static-padded `Batch`, `CSRPlan`, and D3 CSR buffers for `MDEngine`."""
     from lam4.calc.physics import OPEN_MOL_GPU_NL_MAX_ATOMS, build_open_mol_edges_gpu
@@ -327,6 +376,7 @@ def rebuild_md_buffers(eng: Any, initial: bool = False, q_np: np.ndarray | None 
             _fill_md_edges(eng.pb, ei, es, eng.n, n_e, eng.e_cap)
             eng.plan = sync_padded_csr_plan(None, eng.pb.edge_index, eng.n, n_e, eng.e_cap, eng.plan)
             eng._sync_chunks(fresh=False)
+            _sync_md_d3_csr(eng, initial=False, q_np=None)
             return eng._finish_rebuild()
 
     q_np = eng.st.q.detach().cpu().numpy() if q_np is None else q_np
@@ -373,22 +423,7 @@ def rebuild_md_buffers(eng: Any, initial: bool = False, q_np: np.ndarray | None 
     eng._retargeted = False
     eng._warm_coulomb_meta()
     eng._sync_chunks(fresh=initial or n_e > eng.e_cap_prev)
-    need_csr_d3 = (
-        eng.d3_mode is not None
-        and (
-            (eng.can_graph_d3() and (eng.pbc_any or eng.n > 2048))
-            or (getattr(eng, "can_metal_d3", lambda: False)() and (eng.pbc_any or eng.n > 1024))
-        )
-    )
-    if need_csr_d3:
-        prev_d3_cap = eng.d3_e_cap
-        eng.d3_e_cap, eng.d3_rp, eng.d3_send, eng.d3_shift, regrew = sync_padded_d3_csr(
-            eng.n, q_np, eng.cell_np, eng.pbc, eng.skin, eng.headroom, eng.dev,
-            eng.d3_e_cap, eng.d3_rp, eng.d3_send, eng.d3_shift,
-        )
-        if regrew and not initial and prev_d3_cap > 0:
-            eng.stats["regrows"] += 1
-            eng.graph = None
+    _sync_md_d3_csr(eng, initial=initial, q_np=q_np)
     eng._finish_rebuild()
 
 

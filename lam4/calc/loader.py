@@ -5,6 +5,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
+import warnings
 
 import numpy as np
 import torch
@@ -52,6 +53,57 @@ for _ffn in ("domain_experts", "env_mod_768", "env_mod_1152"):
         KNOWN_CFG_HASHES[ModelConfig.lam6_physics(_ffn, coord_alpha_signed=_signed).hash()] = (
             lambda m=_ffn, s=_signed: ModelConfig.lam6_physics(m, coord_alpha_signed=s)
         )
+
+_LAM5_TRAINED_LOTS: frozenset[str] = frozenset({
+    "mp_pbe", "mp_pbeU", "omat_pbe", "omat_pbeU", "matpes_pbe", "matpes_r2scan",
+    "omol_wb97mv", "oc20_rpbe", "oc22_pbeU", "omc25_pbe",
+})
+_LAM6_TRAINED_LOTS: frozenset[str] = frozenset({
+    "mp_pbe", "mp_pbeU", "omat_pbe", "omat_pbeU", "matpes_pbe", "matpes_r2scan",
+    "omol_wb97mv", "spice_wb97md3", "oc20_rpbe", "omc25_pbe",
+})
+KNOWN_TRAINED_LOTS: dict[str, frozenset[str]] = {
+    "ed15546b9b4c": _LAM5_TRAINED_LOTS,
+    "2890592651d2": _LAM5_TRAINED_LOTS,
+    "07596c350413": _LAM6_TRAINED_LOTS,
+}
+
+
+def infer_trained_lots(ck: dict[str, Any] | Any, cfg_hash: str) -> frozenset[str] | None:
+    """Return the set of trained LoT keys for a checkpoint, or `None` when unknown (e.g. in-memory test models)."""
+    if isinstance(ck, dict) and ck.get("trained_lots") is not None:
+        raw = ck["trained_lots"]
+        if isinstance(raw, (list, tuple, set, frozenset)):
+            return frozenset(str(x) for x in raw)
+    return KNOWN_TRAINED_LOTS.get(str(cfg_hash))
+
+
+def warn_or_raise_untrained_lot(calc: Any, src_name: str, *, allow_untrained_lot: bool | None = None) -> None:
+    """Warn once (or raise `ValueError` when `allow_untrained_lot=False`) if `src_name` was not trained in `calc`."""
+    meta = getattr(calc, "meta", None)
+    trained = meta.get("trained_lots") if isinstance(meta, dict) else None
+    if trained is None or src_name in trained:
+        return
+    eff_allow = bool(getattr(calc, "allow_untrained_lot", True)) if allow_untrained_lot is None else bool(allow_untrained_lot)
+    cfg_hash = meta.get("cfg_hash", "unknown") if isinstance(meta, dict) else "unknown"
+    msg = (
+        f"Level of theory {src_name!r} was NOT trained in this checkpoint (cfg_hash={cfg_hash}): "
+        "its LoT/XC/PAW conditioning embedding(s) sit at untrained random initialization, so predictions may be unphysical. "
+        f"Trained LoTs: {sorted(trained)}. Pass allow_untrained_lot=False to fail fast."
+    )
+    if not eff_allow:
+        raise ValueError(msg)
+    seen = getattr(calc, "_warned_untrained_lots", None)
+    if seen is None:
+        seen = set()
+        try:
+            calc._warned_untrained_lots = seen
+        except Exception:  # noqa: BLE001
+            pass
+    if src_name not in seen:
+        seen.add(src_name)
+        warnings.warn(msg, UserWarning, stacklevel=3)
+
 
 _CRYSTAL_E0_CACHE: dict[str, Tensor] = {}
 _MOL_REF_CACHE: dict[str, dict[str, np.ndarray]] = {}
@@ -202,7 +254,10 @@ def load_lam4_checkpoint(
             for st in model.trunk.stages:
                 if hasattr(st, "unbake_inference"):
                     st.unbake_inference()
-        return model, dev, dt, {"cfg_hash": model.cfg.hash(), "weights": "in_memory", "edge_mode": eff_mode, "precision": prec}
+        return model, dev, dt, {
+            "cfg_hash": model.cfg.hash(), "weights": "in_memory", "edge_mode": eff_mode, "precision": prec,
+            "trained_lots": None,
+        }
 
     if weights not in ("ema", "live"):
         raise ValueError(f"weights must be 'ema' or 'live', got {weights!r}")
@@ -245,13 +300,15 @@ def load_lam4_checkpoint(
     eff_mode = _settle_edge_mode(model, eff_mode, dev, dt, low_memory)
     if eff_bake:
         model.bake_for_inference()
+    cfg_hash = str(ck.get("cfg_hash", cfg.hash()) if isinstance(ck, dict) else cfg.hash())
     meta = {
         "path": str(path),
         "step": ck.get("step") if isinstance(ck, dict) else None,
-        "cfg_hash": ck.get("cfg_hash", cfg.hash()) if isinstance(ck, dict) else cfg.hash(),
+        "cfg_hash": cfg_hash,
         "weights": used_weights,
         "edge_mode": eff_mode,
         "precision": prec,
+        "trained_lots": infer_trained_lots(ck, cfg_hash),
     }
     return model, dev, dt, meta
 

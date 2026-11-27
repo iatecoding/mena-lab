@@ -11,11 +11,10 @@ from torch import Tensor
 from lam.models.dispersion import ANGSTROM_TO_BOHR, D3BJ, HARTREE_TO_KCAL, WB97M_D3BJ
 from lam4.core.consts import capturing, cuda_cap_ok, storable
 from lam4.core.radial import norm_device
+from lam4.kernels.metal_d3 import d3_mode_cutoffs, d3_r0ab_np
 from lam4.kernels.triton_coulomb import HAS_TRITON, _jit, _rsqrt, build_group_ptr, triton, tl
 
-_D3_TABLES: dict[torch.device, tuple[Tensor, Tensor, Tensor]] = {}
-_CN_CUT_BOHR = float(11.2 * ANGSTROM_TO_BOHR)
-_R_CUT, _TAPER_ON, _INV_TSPAN = 12.0, 9.0, float(1.0 / (12.0 - 9.0))
+_D3_TABLES: dict[torch.device, tuple[Tensor, Tensor, Tensor, Tensor]] = {}
 _MODE_PARAMS: dict[str, tuple[bool, float, float, float, float]] = {
     "bj_wb97m": (False, float(WB97M_D3BJ["s6"]), float(WB97M_D3BJ["s8"]), float(WB97M_D3BJ["a1"]), float(WB97M_D3BJ["a2"])),
     "zero_pbe": (True, 1.0, 0.722, 1.217, 14.0),
@@ -26,7 +25,7 @@ def has_triton_d3(dev: torch.device | str | None = None) -> bool:
     return bool(os.environ.get("LAM4_TRITON_D3", "1") != "0" and HAS_TRITON and cuda_cap_ok(dev))
 
 
-def _get_d3_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor]:
+def _get_d3_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     ndev = norm_device(dev)
     tabs = _D3_TABLES.get(ndev)
     if tabs is None:
@@ -37,13 +36,14 @@ def _get_d3_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor]:
             ref.rcov.to(device=ndev, dtype=torch.float32).contiguous(),
             ref.r2r4.to(device=ndev, dtype=torch.float32).contiguous(),
             ref.c6ab_flat.reshape(-1).to(device=ndev, dtype=torch.float32).contiguous(),
+            torch.from_numpy(d3_r0ab_np()).to(device=ndev, dtype=torch.float32).contiguous(),
         )
         if storable(tabs[0]):
             _D3_TABLES[ndev] = tabs
     return tabs
 
 
-def warm_d3_tables(dev: torch.device | str | None = None) -> tuple[Tensor, Tensor, Tensor] | None:
+def warm_d3_tables(dev: torch.device | str | None = None) -> tuple[Tensor, Tensor, Tensor, Tensor] | None:
     if not (torch.cuda.is_available() and not capturing()):
         return None
     ndev = norm_device("cuda" if dev is None else dev)
@@ -131,7 +131,7 @@ def _d3_cn_kernel(pos_ptr, z_ptr, mask_ptr, g_ptr, ptr_ptr, idx_ptr, shift_ptr, 
 
 
 @_jit
-def _d3_ef_kernel(pos_ptr, z_ptr, mask_ptr, g_ptr, ptr_ptr, idx_ptr, shift_ptr, cell_ptr, r2r4_ptr, c6_ptr, cn_ptr,
+def _d3_ef_kernel(pos_ptr, z_ptr, mask_ptr, g_ptr, ptr_ptr, idx_ptr, shift_ptr, cell_ptr, r2r4_ptr, c6_ptr, r0ab_ptr, cn_ptr,
                   out_e_ptr, out_dedcn_ptr, out_f_ptr, out_vir_ptr, s6, s8, p_a1, p_a2, r_cut, taper_on, inv_tspan,
                   ang_to_bohr, hartree_kcal, IS_CSR: tl.constexpr, IS_ZERO: tl.constexpr, HAS_MASK: tl.constexpr,
                   HAS_SHIFT: tl.constexpr, HAS_CELL: tl.constexpr, MULTI_CELL: tl.constexpr,
@@ -193,7 +193,8 @@ def _d3_ef_kernel(pos_ptr, z_ptr, mask_ptr, g_ptr, ptr_ptr, idx_ptr, shift_ptr, 
             rb4 = rb2 * rb2
             rb6, rb8 = rb4 * rb2, rb4 * rb4
             if IS_ZERO:
-                r0, rb_s = tl.sqrt(tl.maximum(q_ij, 1.0e-12)), tl.maximum(r_b, 1.0e-6)
+                r0 = tl.maximum(tl.load(r0ab_ptr + zi * 95 + zj, mask=has_ref, other=1.0), 1.0e-6)
+                rb_s = tl.maximum(r_b, 1.0e-6)
                 u6, u8 = (p_a1 * r0) / rb_s, r0 / rb_s
                 u6_2, u8_2 = u6 * u6, u8 * u8
                 u6_4, u8_4 = u6_2 * u6_2, u8_2 * u8_2
@@ -315,21 +316,22 @@ def _run_d3(pos_c: Tensor, z_c: Tensor, mask_u8: Tensor, g_c: Tensor, ptr: Tenso
         raise RuntimeError("Triton is not available in this environment")
     dev, n_atoms = pos_c.device, int(pos_c.shape[0])
     is_zero, s6, s8, p_a1, p_a2 = _MODE_PARAMS[d3_mode]
-    rcov, r2r4, c6_flat = _get_d3_tables(dev)
+    r_cut, taper_on, cn_cut_b, inv_tspan = d3_mode_cutoffs(d3_mode)
+    rcov, r2r4, c6_flat, r0ab = _get_d3_tables(dev)
     need_deriv = bool(compute_forces or do_stress)
     cn, e_atom = torch.empty(n_atoms, dtype=torch.float32, device=dev), torch.empty(n_atoms, dtype=torch.float32, device=dev)
     dedcn = torch.empty(n_atoms, dtype=torch.float32, device=dev) if need_deriv else cn[:1]
     forces = torch.empty((n_atoms, 3), dtype=torch.float32, device=dev) if compute_forces else pos_c[:1]
     vir = torch.empty((n_atoms, 6), dtype=torch.float32, device=dev) if do_stress else pos_c[:1]
     ab, hk = float(ANGSTROM_TO_BOHR), float(HARTREE_TO_KCAL)
-    _d3_cn_kernel[(n_atoms,)](pos_c, z_c, mask_u8, g_c, ptr, idx, sh_c, cell_c, rcov, cn, _CN_CUT_BOHR, ab,
+    _d3_cn_kernel[(n_atoms,)](pos_c, z_c, mask_u8, g_c, ptr, idx, sh_c, cell_c, rcov, cn, cn_cut_b, ab,
                               IS_CSR=is_csr, HAS_MASK=has_mask, HAS_SHIFT=has_shift, HAS_CELL=has_cell, MULTI_CELL=multi_cell, BLOCK_J=64, num_warps=2)
-    _d3_ef_kernel[(n_atoms,)](pos_c, z_c, mask_u8, g_c, ptr, idx, sh_c, cell_c, r2r4, c6_flat, cn, e_atom, dedcn, forces, vir,
-                              s6, s8, p_a1, p_a2, _R_CUT, _TAPER_ON, _INV_TSPAN, ab, hk,
+    _d3_ef_kernel[(n_atoms,)](pos_c, z_c, mask_u8, g_c, ptr, idx, sh_c, cell_c, r2r4, c6_flat, r0ab, cn, e_atom, dedcn, forces, vir,
+                              s6, s8, p_a1, p_a2, r_cut, taper_on, inv_tspan, ab, hk,
                               IS_CSR=is_csr, IS_ZERO=is_zero, HAS_MASK=has_mask, HAS_SHIFT=has_shift, HAS_CELL=has_cell, MULTI_CELL=multi_cell,
                               NEED_DERIV=need_deriv, NEED_FORCES=compute_forces, NEED_STRESS=do_stress, BLOCK_J=64, num_warps=2)
     if need_deriv:
-        _d3_fcn_kernel[(n_atoms,)](pos_c, z_c, mask_u8, g_c, ptr, idx, sh_c, cell_c, rcov, dedcn, forces, vir, _CN_CUT_BOHR, ab,
+        _d3_fcn_kernel[(n_atoms,)](pos_c, z_c, mask_u8, g_c, ptr, idx, sh_c, cell_c, rcov, dedcn, forces, vir, cn_cut_b, ab,
                                    IS_CSR=is_csr, HAS_MASK=has_mask, HAS_SHIFT=has_shift, HAS_CELL=has_cell, MULTI_CELL=multi_cell,
                                    NEED_FORCES=compute_forces, NEED_STRESS=do_stress, BLOCK_J=64, num_warps=2)
     return e_atom, (forces if compute_forces else None), (vir if do_stress else None)

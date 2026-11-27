@@ -70,7 +70,7 @@ template <typename T>
 inline void accum_pair_r1(
     T dx, T dy, T dz, T d2, int zi, int zj, int ni, int nj,
     const T* pw_i, const T* dpw_i, const T* pw_j,
-    T r2r4_i, const T* r2r4, const T* c6_mat,
+    T r2r4_i, const T* r2r4, const T* c6_mat, const T* r0ab,
     T s6, T s8, T p_a1, T p_a2, T r_cut, T taper_on, T inv_tspan,
     bool is_zero, bool need_deriv, bool need_forces, bool need_stress,
     double& acc_e, T& acc_dedcn, T& fx, T& fy, T& fz,
@@ -98,7 +98,8 @@ inline void accum_pair_r1(
     T rb6 = rb4 * rb2, rb8 = rb4 * rb4;
     T A, dA_dr = T(0);
     if (is_zero) {
-        T r0 = std::sqrt(q_ij > T(1.0e-12) ? q_ij : T(1.0e-12));
+        T r0_raw = r0ab[zi * 95 + zj];
+        T r0 = r0_raw > T(1.0e-6) ? r0_raw : T(1.0e-6);
         T rb_s = r_b > T(1.0e-6) ? r_b : T(1.0e-6);
         T u6 = (p_a1 * r0) / rb_s, u8 = r0 / rb_s;
         T u6_2 = u6 * u6, u8_2 = u8 * u8;
@@ -151,12 +152,16 @@ template <typename T>
 void run_grouped(
     int n, const T* pos, const int64_t* z, const uint8_t* mask,
     const int64_t* graph, const int* group_ptr,
-    const T* rcov, const T* r2r4, const int* n_ref, const T* cn_ref, const T* c6_mat,
+    const T* rcov, const T* r2r4, const int* n_ref, const T* cn_ref, const T* c6_mat, const T* r0ab,
     T s6, T s8, T p_a1, T p_a2, bool is_zero, bool need_forces,
     double* out_e, T* out_f
 ) {
-    const T r_cut = T(12.0), taper_on = T(9.0), inv_tspan = T(1.0 / 3.0);
-    const T cn_cut_b = T(11.2 * ANG_TO_BOHR);
+    const T r_cut = is_zero ? T(20.0) : T(12.0);
+    const T taper_on = is_zero ? T(20.0) : T(9.0);
+    const T inv_tspan = is_zero ? T(0.0) : T(1.0 / 3.0);
+    const T cn_cut_a = is_zero ? T(20.0) : T(11.2);
+    const T cn_cut2 = cn_cut_a * cn_cut_a + T(1.0e-3);
+    const T cn_cut_b = cn_cut_a * T(ANG_TO_BOHR);
     const bool par = (n >= 32);
     const int nt = n_threads();
 
@@ -179,7 +184,7 @@ void run_grouped(
             if (j == i || (mask && mask[j] == 0)) continue;
             T dx = pix - pos[3 * j], dy = piy - pos[3 * j + 1], dz = piz - pos[3 * j + 2];
             T d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 > T(11.2 * 11.2 + 1.0e-3)) continue;
+            if (d2 > cn_cut2) continue;
             T r_b = std::sqrt(d2 + T(1.0e-8)) * T(ANG_TO_BOHR);
             if (r_b <= cn_cut_b) {
                 int zj = int(std::clamp<int64_t>(z[j], 0, 94));
@@ -214,7 +219,7 @@ void run_grouped(
             if (d2 > r_cut * r_cut) continue;
             int zj = int(std::clamp<int64_t>(z[j], 0, 94));
             accum_pair_r1<T>(dx, dy, dz, d2, zi, zj, ni, n_ref[zj], pw_i, dpw_i, pw.data() + 5 * j,
-                             r2r4_i, r2r4, c6_mat, s6, s8, p_a1, p_a2, r_cut, taper_on, inv_tspan,
+                             r2r4_i, r2r4, c6_mat, r0ab, s6, s8, p_a1, p_a2, r_cut, taper_on, inv_tspan,
                              is_zero, need_forces, need_forces, false,
                              acc_e, acc_de, fx, fy, fz, vxx, vyy, vzz, vxy, vxz, vyz);
         }
@@ -240,7 +245,7 @@ void run_grouped(
             if (j == i || (mask && mask[j] == 0)) continue;
             T dx = pix - pos[3 * j], dy = piy - pos[3 * j + 1], dz = piz - pos[3 * j + 2];
             T d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 > T(11.2 * 11.2 + 1.0e-3)) continue;
+            if (d2 > cn_cut2) continue;
             T r2_eps = d2 + T(1.0e-8);
             T r_ang = std::sqrt(r2_eps);
             T r_b = r_ang * T(ANG_TO_BOHR);
@@ -261,12 +266,16 @@ void run_csr(
     int n, const T* pos, const int64_t* z, const uint8_t* mask,
     const int64_t* graph, const int* recv_ptr, const int* send_idx,
     const T* shift, const T* cell, bool multi_cell,
-    const T* rcov, const T* r2r4, const int* n_ref, const T* cn_ref, const T* c6_mat,
+    const T* rcov, const T* r2r4, const int* n_ref, const T* cn_ref, const T* c6_mat, const T* r0ab,
     T s6, T s8, T p_a1, T p_a2, bool is_zero, bool need_forces, bool need_stress,
     double* out_e, T* out_f, double* out_vir
 ) {
-    const T r_cut = T(12.0), taper_on = T(9.0), inv_tspan = T(1.0 / 3.0);
-    const T cn_cut_b = T(11.2 * ANG_TO_BOHR);
+    const T r_cut = is_zero ? T(20.0) : T(12.0);
+    const T taper_on = is_zero ? T(20.0) : T(9.0);
+    const T inv_tspan = is_zero ? T(0.0) : T(1.0 / 3.0);
+    const T cn_cut_a = is_zero ? T(20.0) : T(11.2);
+    const T cn_cut2 = cn_cut_a * cn_cut_a + T(1.0e-3);
+    const T cn_cut_b = cn_cut_a * T(ANG_TO_BOHR);
     const bool need_deriv = need_forces || need_stress;
     const bool has_shift = (shift != nullptr);
     const bool has_cell = (has_shift && cell != nullptr);
@@ -300,7 +309,7 @@ void run_csr(
                 } else { dx -= sx; dy -= sy; dz -= sz; }
             }
             T d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 <= T(1.0e-12) || d2 > T(11.2 * 11.2 + 1.0e-3)) continue;
+            if (d2 <= T(1.0e-12) || d2 > cn_cut2) continue;
             T r_b = std::sqrt(d2 + T(1.0e-8)) * T(ANG_TO_BOHR);
             if (r_b <= cn_cut_b) {
                 int zj = int(std::clamp<int64_t>(z[j], 0, 94));
@@ -345,7 +354,7 @@ void run_csr(
             if (d2 <= T(1.0e-12) || d2 > r_cut * r_cut) continue;
             int zj = int(std::clamp<int64_t>(z[j], 0, 94));
             accum_pair_r1<T>(dx, dy, dz, d2, zi, zj, ni, n_ref[zj], pw_i, dpw_i, pw.data() + 5 * j,
-                             r2r4_i, r2r4, c6_mat, s6, s8, p_a1, p_a2, r_cut, taper_on, inv_tspan,
+                             r2r4_i, r2r4, c6_mat, r0ab, s6, s8, p_a1, p_a2, r_cut, taper_on, inv_tspan,
                              is_zero, need_deriv, need_forces, need_stress,
                              acc_e, acc_de, fx, fy, fz, vxx, vyy, vzz, vxy, vxz, vyz);
         }
@@ -384,7 +393,7 @@ void run_csr(
                 } else { dx -= sx; dy -= sy; dz -= sz; }
             }
             T d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 <= T(1.0e-12) || d2 > T(11.2 * 11.2 + 1.0e-3)) continue;
+            if (d2 <= T(1.0e-12) || d2 > cn_cut2) continue;
             T r2_eps = d2 + T(1.0e-8);
             T r_ang = std::sqrt(r2_eps);
             T r_b = r_ang * T(ANG_TO_BOHR);
@@ -412,7 +421,7 @@ void run_csr(
 
 std::vector<at::Tensor> d3_grouped(
     at::Tensor pos, at::Tensor z, at::Tensor mask, at::Tensor graph, at::Tensor group_ptr,
-    at::Tensor rcov, at::Tensor r2r4, at::Tensor n_ref, at::Tensor cn_ref, at::Tensor c6_mat,
+    at::Tensor rcov, at::Tensor r2r4, at::Tensor n_ref, at::Tensor cn_ref, at::Tensor c6_mat, at::Tensor r0ab,
     double s6, double s8, double p_a1, double p_a2, bool is_zero, bool need_forces
 ) {
     const int64_t n = pos.size(0);
@@ -424,7 +433,7 @@ std::vector<at::Tensor> d3_grouped(
         run_grouped<double>(
             (int)n, pos.data_ptr<double>(), z.data_ptr<int64_t>(), mptr, gptr, group_ptr.data_ptr<int>(),
             rcov.data_ptr<double>(), r2r4.data_ptr<double>(), n_ref.data_ptr<int>(),
-            cn_ref.data_ptr<double>(), c6_mat.data_ptr<double>(),
+            cn_ref.data_ptr<double>(), c6_mat.data_ptr<double>(), r0ab.data_ptr<double>(),
             s6, s8, p_a1, p_a2, is_zero, need_forces,
             out_e.data_ptr<double>(), need_forces ? out_f.data_ptr<double>() : nullptr);
     } else {
@@ -432,7 +441,7 @@ std::vector<at::Tensor> d3_grouped(
         run_grouped<float>(
             (int)n, pos.data_ptr<float>(), z.data_ptr<int64_t>(), mptr, gptr, group_ptr.data_ptr<int>(),
             rcov.data_ptr<float>(), r2r4.data_ptr<float>(), n_ref.data_ptr<int>(),
-            cn_ref.data_ptr<float>(), c6_mat.data_ptr<float>(),
+            cn_ref.data_ptr<float>(), c6_mat.data_ptr<float>(), r0ab.data_ptr<float>(),
             (float)s6, (float)s8, (float)p_a1, (float)p_a2, is_zero, need_forces,
             out_e.data_ptr<double>(), need_forces ? out_f.data_ptr<float>() : nullptr);
     }
@@ -442,7 +451,7 @@ std::vector<at::Tensor> d3_grouped(
 std::vector<at::Tensor> d3_csr(
     at::Tensor pos, at::Tensor z, at::Tensor mask, at::Tensor graph,
     at::Tensor recv_ptr, at::Tensor send_idx, at::Tensor shift, at::Tensor cell, bool multi_cell,
-    at::Tensor rcov, at::Tensor r2r4, at::Tensor n_ref, at::Tensor cn_ref, at::Tensor c6_mat,
+    at::Tensor rcov, at::Tensor r2r4, at::Tensor n_ref, at::Tensor cn_ref, at::Tensor c6_mat, at::Tensor r0ab,
     double s6, double s8, double p_a1, double p_a2, bool is_zero, bool need_forces, bool need_stress
 ) {
     const int64_t n = pos.size(0);
@@ -458,7 +467,7 @@ std::vector<at::Tensor> d3_csr(
             shift.numel() ? shift.data_ptr<double>() : nullptr,
             cell.numel() ? cell.data_ptr<double>() : nullptr, multi_cell,
             rcov.data_ptr<double>(), r2r4.data_ptr<double>(), n_ref.data_ptr<int>(),
-            cn_ref.data_ptr<double>(), c6_mat.data_ptr<double>(),
+            cn_ref.data_ptr<double>(), c6_mat.data_ptr<double>(), r0ab.data_ptr<double>(),
             s6, s8, p_a1, p_a2, is_zero, need_forces, need_stress,
             out_e.data_ptr<double>(), need_forces ? out_f.data_ptr<double>() : nullptr,
             need_stress ? out_vir.data_ptr<double>() : nullptr);
@@ -470,7 +479,7 @@ std::vector<at::Tensor> d3_csr(
             shift.numel() ? shift.data_ptr<float>() : nullptr,
             cell.numel() ? cell.data_ptr<float>() : nullptr, multi_cell,
             rcov.data_ptr<float>(), r2r4.data_ptr<float>(), n_ref.data_ptr<int>(),
-            cn_ref.data_ptr<float>(), c6_mat.data_ptr<float>(),
+            cn_ref.data_ptr<float>(), c6_mat.data_ptr<float>(), r0ab.data_ptr<float>(),
             (float)s6, (float)s8, (float)p_a1, (float)p_a2, is_zero, need_forces, need_stress,
             out_e.data_ptr<double>(), need_forces ? out_f.data_ptr<float>() : nullptr,
             need_stress ? out_vir.data_ptr<double>() : nullptr);

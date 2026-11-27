@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import math
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypeAlias
+import warnings
 
 import numpy as np
 import torch
@@ -17,15 +18,32 @@ ArrayLike: TypeAlias = np.ndarray | Tensor
 K_COUL = 332.06371  # kcal * A / (mol * e^2)
 _DEFAULT_RADIUS, _DEFAULT_HCT_SCALE, _MAX_Z_LUT = 1.70, 0.80, 119
 
+# Bondi (1964) / Mantina et al. (JPCA 2009) / Alvarez (Dalton Trans. 2013) vdW radii (A)
 BONDI_RADII: dict[int, float] = {
-    1: 1.20, 5: 1.92, 6: 1.70, 7: 1.55, 8: 1.52, 9: 1.47, 15: 1.80, 16: 1.80, 17: 1.75, 35: 1.85, 53: 1.98,
+    1: 1.20, 3: 1.82, 5: 1.92, 6: 1.70, 7: 1.55, 8: 1.52, 9: 1.47,
+    11: 2.27, 12: 1.73, 13: 1.84, 15: 1.80, 16: 1.80, 17: 1.75,
+    19: 2.75, 20: 2.31, 22: 2.15, 23: 2.07, 24: 2.06, 25: 2.05, 26: 2.04,
+    27: 2.00, 28: 1.63, 29: 1.40, 30: 1.39, 35: 1.85, 37: 3.03, 38: 2.49,
+    42: 2.17, 46: 1.63, 47: 1.72, 48: 1.58, 53: 1.98, 55: 3.43, 56: 2.68,
+    78: 1.75, 79: 1.66, 80: 1.55,
 }
-# AMBER mbondi2 base radii (H bonded to N gets 1.30 A dynamically)
+# AMBER mbondi2 base radii (H bonded to N gets 1.30 A dynamically) + Born-calibrated hydrated metal ion radii (A)
 MBONDI2_BASE: dict[int, float] = {
-    1: 1.20, 5: 1.92, 6: 1.70, 7: 1.55, 8: 1.50, 9: 1.50, 15: 1.85, 16: 1.80, 17: 1.70, 35: 1.85, 53: 1.98,
+    1: 1.20, 3: 1.40, 5: 1.92, 6: 1.70, 7: 1.55, 8: 1.50, 9: 1.50,
+    11: 1.76, 12: 1.50, 13: 1.35, 15: 1.85, 16: 1.80, 17: 1.70,
+    19: 2.14, 20: 1.82, 22: 1.55, 23: 1.52, 24: 1.50, 25: 1.52, 26: 1.50,
+    27: 1.46, 28: 1.44, 29: 1.40, 30: 1.39, 35: 1.85, 37: 2.28, 38: 2.08,
+    42: 1.65, 46: 1.63, 47: 1.72, 48: 1.58, 53: 1.98, 55: 2.50, 56: 2.28,
+    78: 1.75, 79: 1.66, 80: 1.55,
 }
+# AMBER / OpenMM HCT screening scale factors (0.85 standard for metal ions)
 HCT_SCALE: dict[int, float] = {
-    1: 0.85, 5: 0.80, 6: 0.72, 7: 0.79, 8: 0.85, 9: 0.88, 15: 0.86, 16: 0.96, 17: 0.80, 35: 0.80, 53: 0.80,
+    1: 0.85, 3: 0.85, 5: 0.80, 6: 0.72, 7: 0.79, 8: 0.85, 9: 0.88,
+    11: 0.85, 12: 0.85, 13: 0.85, 15: 0.86, 16: 0.96, 17: 0.80,
+    19: 0.85, 20: 0.85, 22: 0.85, 23: 0.85, 24: 0.85, 25: 0.85, 26: 0.85,
+    27: 0.85, 28: 0.85, 29: 0.85, 30: 0.85, 35: 0.80, 37: 0.85, 38: 0.85,
+    42: 0.85, 46: 0.85, 47: 0.85, 48: 0.85, 53: 0.80, 55: 0.85, 56: 0.85,
+    78: 0.85, 79: 0.85, 80: 0.85,
 }
 OBC2_PARAMS: tuple[float, float, float] = (1.0, 0.8, 4.85)
 OBC1_PARAMS: tuple[float, float, float] = (0.8, 0.0, 2.909125)
@@ -39,9 +57,46 @@ def _build_lut(table: Mapping[int, float], default: float) -> np.ndarray:
     return lut
 
 
+def _build_known_lut(table: Mapping[int, float]) -> np.ndarray:
+    known = np.zeros(_MAX_Z_LUT, dtype=bool)
+    for zi in table:
+        if 0 <= int(zi) < _MAX_Z_LUT:
+            known[int(zi)] = True
+    return known
+
+
 _BONDI_LUT = _build_lut(BONDI_RADII, _DEFAULT_RADIUS)
 _MBONDI2_LUT = _build_lut(MBONDI2_BASE, _DEFAULT_RADIUS)
 _HCT_LUT = _build_lut(HCT_SCALE, _DEFAULT_HCT_SCALE)
+_BONDI_KNOWN_LUT = _build_known_lut(BONDI_RADII)
+_MBONDI2_KNOWN_LUT = _build_known_lut(MBONDI2_BASE)
+_WARNED_FALLBACK_Z: set[int] = set()
+
+
+def _warn_if_unknown_radii(z_arr: Any, known_lut: np.ndarray, radii_set: str) -> None:
+    """Emit a deduplicated warning once per unknown atomic number falling back to `_DEFAULT_RADIUS`."""
+    if torch.is_tensor(z_arr):
+        if getattr(torch, "compiler", None) is not None and torch.compiler.is_compiling():
+            return
+        z_np = z_arr.detach().cpu().numpy()
+    else:
+        z_np = np.asarray(z_arr, dtype=np.int64)
+    if z_np.size == 0:
+        return
+    in_b = (z_np >= 0) & (z_np < len(known_lut))
+    safe = np.where(in_b, z_np, 0)
+    unk_mask = (~in_b) | (~known_lut[safe])
+    if not bool(np.any(unk_mask)):
+        return
+    unseen = sorted({int(zi) for zi in np.unique(z_np[unk_mask]) if int(zi) not in _WARNED_FALLBACK_Z})
+    if unseen:
+        _WARNED_FALLBACK_Z.update(unseen)
+        warnings.warn(
+            f"implicit_solvent ({radii_set}): no calibrated Born radius for Z={unseen}; "
+            f"falling back to default R={_DEFAULT_RADIUS:.2f} A (HCT scale={_DEFAULT_HCT_SCALE:.2f}).",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _backend(*objs: Any) -> tuple[bool, torch.device | None, Any]:
@@ -117,9 +172,11 @@ def get_radii(
     if radii_set not in ("bondi", "mbondi2", "bondi_hn130"):
         raise ValueError(f"Unknown radii_set {radii_set!r}; expected 'bondi', 'mbondi2', or 'bondi_hn130'")
     base_lut = _BONDI_LUT if radii_set in ("bondi", "bondi_hn130") else _MBONDI2_LUT
+    known_lut = _BONDI_KNOWN_LUT if radii_set in ("bondi", "bondi_hn130") else _MBONDI2_KNOWN_LUT
     use_hn130 = radii_set in ("mbondi2", "bondi_hn130")
     is_t, dev, dt = _backend(z, pos)
     z_arr, pos_arr = _to_long(z, is_t, dev), _to_float(pos, is_t, dev, dt)
+    _warn_if_unknown_radii(z_arr, known_lut, radii_set)
     radii = _lookup_lut(base_lut, z_arr, _DEFAULT_RADIUS, dt)
 
     if use_hn130 and pos_arr.shape[0] > 0:

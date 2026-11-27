@@ -16,21 +16,42 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from lam.models.dispersion import ANGSTROM_TO_BOHR, D3BJ, WB97M_D3BJ
+from lam.models.dispersion import ANGSTROM_TO_BOHR, D3BJ, WB97M_D3BJ, _params_path
 from lam4.kernels import metal_csr as _metal_csr
 from lam4.kernels.metal_coulomb import build_group_ptr
 from lam4.kernels.metal_d3_src import METAL_D3_MSL
 
 _D3_LIB: Any = None
 _D3_FAILED: bool = False
-_D3_TABLES: dict[tuple[str, int | None], tuple[Tensor, Tensor, Tensor, Tensor, Tensor]] = {}
+_D3_TABLES: dict[tuple[str, int | None], tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]] = {}
 _R1_NP_CACHE: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+_R0AB_NP_CACHE: np.ndarray | None = None
 
 _MODE_PARAMS: dict[str, tuple[int, tuple[float, float, float, float]]] = {
     "bj_wb97m": (0, (float(WB97M_D3BJ["s6"]), float(WB97M_D3BJ["s8"]), float(WB97M_D3BJ["a1"]), float(WB97M_D3BJ["a2"]))),
     "zero_pbe": (1, (1.0, 0.722, 1.217, 14.0)),
 }
-_PARAMS1 = (12.0, 9.0, float(11.2 * ANGSTROM_TO_BOHR), float(1.0 / (12.0 - 9.0)))
+_PARAMS1_BJ = (12.0, 9.0, float(11.2 * ANGSTROM_TO_BOHR), float(1.0 / (12.0 - 9.0)))
+_PARAMS1_ZERO = (20.0, 20.0, float(20.0 * ANGSTROM_TO_BOHR), 0.0)
+
+
+def d3_cutoff_for_mode(d3_mode: str | None) -> float:
+    """Pair cutoff (Angstrom) for D3 dispersion (`20.0` for `zero_pbe`, `12.0` for `bj_*`)."""
+    return 20.0 if d3_mode == "zero_pbe" else 12.0
+
+
+def d3_mode_cutoffs(d3_mode: str) -> tuple[float, float, float, float]:
+    """Return `(r_cut_A, taper_on_A, cn_cut_bohr, inv_tspan)` for `d3_mode`."""
+    return _PARAMS1_ZERO if d3_mode == "zero_pbe" else _PARAMS1_BJ
+
+
+def d3_r0ab_np() -> np.ndarray:
+    """Return Grimme's exact pairwise `r0ab[95, 95]` table (Bohr, flat `[95*95]` float64) for D3(0)."""
+    global _R0AB_NP_CACHE
+    if _R0AB_NP_CACHE is None:
+        t = np.load(_params_path(), allow_pickle=True)
+        _R0AB_NP_CACHE = np.ascontiguousarray(t["r0ab"][:95, :95].reshape(95 * 95), dtype=np.float64)
+    return _R0AB_NP_CACHE
 
 
 def d3_rank1_tables_np() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -81,7 +102,7 @@ def get_metal_d3_lib() -> Any:
     return _D3_LIB
 
 
-def _get_d3_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+def _get_d3_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     key = (dev.type, dev.index)
     tabs = _D3_TABLES.get(key)
     if tabs is None:
@@ -92,6 +113,7 @@ def _get_d3_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor, T
             torch.from_numpy(n_ref).to(device=dev, dtype=torch.int32).contiguous(),
             torch.from_numpy(cn_ref).to(device=dev, dtype=torch.float32).contiguous(),
             torch.from_numpy(c6_mat).to(device=dev, dtype=torch.float32).contiguous(),
+            torch.from_numpy(d3_r0ab_np()).to(device=dev, dtype=torch.float32).contiguous(),
         )
         _D3_TABLES[key] = tabs
     return tabs
@@ -127,8 +149,9 @@ def metal_d3_grouped(
         return e0, f0
 
     lib = get_metal_d3_lib()
-    rcov, r2r4, n_ref, cn_ref, c6_mat = _get_d3_tables(dev)
+    rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab = _get_d3_tables(dev)
     is_zero, params0 = _MODE_PARAMS[d3_mode]
+    params1 = d3_mode_cutoffs(d3_mode)
     pos_c = pos.to(torch.float32).contiguous()
     z_c = z.to(torch.int64).contiguous()
     g_c = graph.to(torch.int64).contiguous()
@@ -146,14 +169,14 @@ def metal_d3_grouped(
     forces = torch.empty((n_atoms, 3), dtype=torch.float32, device=dev) if compute_forces else pos_c[:1]
 
     threads, group_size = _grid_sub8(n_atoms)
-    lib.d3_cn_grouped(pos_c, z_c, mask_u8, g_c, ptr, rcov, n_ref, cn_ref, pw, dpw, n_atoms, _PARAMS1, threads=threads, group_size=group_size)
+    lib.d3_cn_grouped(pos_c, z_c, mask_u8, g_c, ptr, rcov, n_ref, cn_ref, pw, dpw, n_atoms, params1, threads=threads, group_size=group_size)
     lib.d3_ef_grouped(
         pos_c, z_c, mask_u8, g_c, ptr, r2r4, n_ref, c6_mat, pw, dpw, e_atom, dedcn, forces,
-        n_atoms, int(is_zero), int(compute_forces), params0, _PARAMS1,
+        n_atoms, int(is_zero), int(compute_forces), params0, params1, r0ab,
         threads=threads, group_size=group_size,
     )
     if compute_forces:
-        lib.d3_fcn_grouped(pos_c, z_c, mask_u8, g_c, ptr, rcov, dedcn, forces, n_atoms, _PARAMS1, threads=threads, group_size=group_size)
+        lib.d3_fcn_grouped(pos_c, z_c, mask_u8, g_c, ptr, rcov, dedcn, forces, n_atoms, params1, threads=threads, group_size=group_size)
 
     e_graph = e_atom.sum(0, keepdim=True) if G == 1 else torch.zeros(G, dtype=torch.float32, device=dev).index_add_(0, g_c, e_atom)
     return e_graph, (forces if compute_forces else None)
@@ -189,8 +212,9 @@ def metal_d3_csr_full(
         )
 
     lib = get_metal_d3_lib()
-    rcov, r2r4, n_ref, cn_ref, c6_mat = _get_d3_tables(dev)
+    rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab = _get_d3_tables(dev)
     is_zero, params0 = _MODE_PARAMS[d3_mode]
+    params1 = d3_mode_cutoffs(d3_mode)
     pos_c = pos.to(torch.float32).contiguous()
     z_c = z.to(torch.int64).contiguous()
     rp_c = recv_ptr.to(torch.int32).contiguous()
@@ -226,13 +250,13 @@ def metal_d3_csr_full(
     vir = torch.empty((n_atoms, 6), dtype=torch.float32, device=dev) if do_stress else pos_c[:1]
 
     threads, group_size = _grid_sub8(n_atoms)
-    lib.d3_cn_csr(pos_c, z_c, mask_u8, g_c, rp_c, si_c, sh_c, cell_c, rcov, n_ref, cn_ref, pw, dpw, n_atoms, flags, _PARAMS1, threads=threads, group_size=group_size)
+    lib.d3_cn_csr(pos_c, z_c, mask_u8, g_c, rp_c, si_c, sh_c, cell_c, rcov, n_ref, cn_ref, pw, dpw, n_atoms, flags, params1, threads=threads, group_size=group_size)
     lib.d3_ef_csr(
         pos_c, z_c, mask_u8, g_c, rp_c, si_c, sh_c, cell_c, r2r4, n_ref, c6_mat, pw, dpw,
-        e_atom, dedcn, forces, vir, n_atoms, flags, params0, _PARAMS1, threads=threads, group_size=group_size,
+        e_atom, dedcn, forces, vir, n_atoms, flags, params0, params1, r0ab, threads=threads, group_size=group_size,
     )
     if need_deriv:
-        lib.d3_fcn_csr(pos_c, z_c, mask_u8, g_c, rp_c, si_c, sh_c, cell_c, rcov, dedcn, forces, vir, n_atoms, flags, _PARAMS1, threads=threads, group_size=group_size)
+        lib.d3_fcn_csr(pos_c, z_c, mask_u8, g_c, rp_c, si_c, sh_c, cell_c, rcov, dedcn, forces, vir, n_atoms, flags, params1, threads=threads, group_size=group_size)
 
     if G == 1 or graph is None:
         e_graph = e_atom.sum(0, keepdim=True)

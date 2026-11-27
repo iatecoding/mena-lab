@@ -172,7 +172,9 @@ def eval_batched_open_mol_d3(
                     )
                     return ed3, (fd3 if (compute_forces and fd3 is not None) else None)
                 if max_n <= OPEN_MOL_GPU_D3_CSR_MAX_ATOMS and hasattr(td3, "triton_build_csr_i32") and hasattr(td3, "triton_d3_csr"):
-                    ei, _ = build_open_mol_edges_gpu(pos, graph, counts_list, 12.0, dt)
+                    from lam4.kernels.metal_d3 import d3_cutoff_for_mode
+
+                    ei, _ = build_open_mol_edges_gpu(pos, graph, counts_list, d3_cutoff_for_mode(d3_mode), dt)
                     rp, send_i32 = td3.triton_build_csr_i32(ei[1].to(torch.int32), ei[0].to(torch.int32), n_atoms)
                     ed3, fd3, _ = td3.triton_d3_csr(
                         z, pos, rp, send_i32, d3_mode=d3_mode, graph=graph, n_graphs=G,
@@ -183,7 +185,7 @@ def eval_batched_open_mol_d3(
                 pass
 
     if dev.type == "mps" and d3_mode in ("bj_wb97m", "zero_pbe") and max_n <= OPEN_MOL_GPU_D3_CSR_MAX_ATOMS:
-        from lam4.kernels.metal_d3 import has_metal_d3, metal_build_csr_i32, metal_d3_csr, metal_d3_grouped
+        from lam4.kernels.metal_d3 import d3_cutoff_for_mode, has_metal_d3, metal_build_csr_i32, metal_d3_csr, metal_d3_grouped
 
         if has_metal_d3():
             try:
@@ -192,7 +194,7 @@ def eval_batched_open_mol_d3(
                         z, pos, graph, G, d3_mode=d3_mode, group_ptr=group_ptr, compute_forces=compute_forces,
                     )
                     return ed3, (fd3 if (compute_forces and fd3 is not None) else None)
-                ei, _ = build_open_mol_edges_gpu(pos, graph, counts_list, 12.0, dt)
+                ei, _ = build_open_mol_edges_gpu(pos, graph, counts_list, d3_cutoff_for_mode(d3_mode), dt)
                 rp, send_i32 = metal_build_csr_i32(ei[1].to(torch.int32), ei[0].to(torch.int32), n_atoms)
                 ed3, fd3 = metal_d3_csr(
                     z, pos, rp, send_i32, d3_mode=d3_mode, graph=graph, n_graphs=G, compute_forces=compute_forces,

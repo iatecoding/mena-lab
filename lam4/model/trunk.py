@@ -20,6 +20,7 @@ Edge path: `edge_mode` "ref" (oracle, materialises [E, ~700]) | "stream" (chunke
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,6 +96,26 @@ class Trunk(nn.Module):
         self.fb_field = nn.ModuleList([FieldFeedback(d, k, cfg.phi_basis, ten_rank=(cfg.k2 if cfg.use_l2_efg else 0)) for _ in range(fp)])
         self.fb_density = nn.ModuleList([DensityFeedback(d, cfg.fb_hidden, radical_density=cfg.two_channel_spin) for _ in range(fp)])
         self.spin_desc_head = SpinDescriptorHead(d) if cfg.two_channel_spin else None
+        self.fixed_grid_shape: tuple[int, int, int] | None = None
+
+    def set_fixed_grid_shape(self, fixed_grid_shape: tuple[int, int, int] | None) -> None:
+        """Lock or release BatchedSPME FFT mesh dimensions across box fluctuations (e.g. NPT MD)."""
+        if fixed_grid_shape is None:
+            self.fixed_grid_shape = None
+            return
+        from lam4.physics.spme_batched import normalize_spme_grid
+
+        self.fixed_grid_shape = normalize_spme_grid(fixed_grid_shape)
+
+    @contextmanager
+    def locked_spme_grid(self, fixed_grid_shape: tuple[int, int, int] | None):
+        """Temporarily lock BatchedSPME FFT mesh dimensions on this trunk (restored on exit)."""
+        prev = self.fixed_grid_shape
+        self.set_fixed_grid_shape(fixed_grid_shape)
+        try:
+            yield self.fixed_grid_shape
+        finally:
+            self.fixed_grid_shape = prev
 
     def set_remat(self, remat: bool | str) -> None:
         mode = check_mode(remat)
@@ -142,16 +163,22 @@ class Trunk(nn.Module):
                 eg.phi = edge_basis(eg.geom[1], self.cfg.r_cut)
         return eg
 
-    def _electro_backend(self, b: GraphBatch, pos: Tensor, *, create_graph: bool = False):
+    def _electro_backend(self, b: GraphBatch, pos: Tensor, *, create_graph: bool = False,
+                         fixed_grid_shape: tuple[int, int, int] | None = None):
         """Build per-step electrostatic backend once, caching Morton/CSR/slot/SPME metadata across Stage 0, Stage 1, and Readout."""
         cfg, mask = self.cfg, b.atom_mask
         if b.pbc:
-            from lam4.physics.spme_batched import BatchedSPME, select_spme_grid
+            from lam4.physics.spme_batched import BatchedSPME, normalize_spme_grid, select_spme_grid
 
             order = int(getattr(cfg, "mesh_order", 6))
             spacing = float(getattr(cfg, "mesh_spacing", 0.8))
             sym = torch.compiler.is_compiling() or proxy_tracing() or is_fake(b.cell)
-            if b.spme_grid is not None:
+            locked = fixed_grid_shape if fixed_grid_shape is not None else getattr(b, "fixed_grid_shape", None)
+            if locked is None:
+                locked = self.fixed_grid_shape
+            if locked is not None:
+                grid = normalize_spme_grid(locked)
+            elif b.spme_grid is not None:
                 grid = b.spme_grid
             elif not sym:
                 grid = select_spme_grid(b.cell, spacing=spacing, min_size=max(8, order))
@@ -160,6 +187,7 @@ class Trunk(nn.Module):
             return BatchedSPME(
                 pos, b.cell, b.graph, mask, b.graph_mask,
                 sigma=cfg.coulomb_sigma, grid_shape=grid, order=order, active=True,
+                fixed_grid_shape=locked,
             )
         if cfg.sqe_pqeq or (cfg.use_l2_efg and create_graph):
             return OpenMultipoleBackend.from_batch(b, pos=pos, sigma=cfg.coulomb_sigma)
@@ -187,7 +215,8 @@ class Trunk(nn.Module):
         return ExactCoulomb(pos, make_slots_static(mask, eff_graph, eff_g, eff_cap), cfg.coulomb_sigma)
 
     def forward(self, b: GraphBatch, pos: Tensor, domain: str, *, chunks: list | None = None, edge_scale=None,
-                csr_plan=None, create_graph: bool = False) -> TrunkOut:
+                csr_plan=None, create_graph: bool = False,
+                fixed_grid_shape: tuple[int, int, int] | None = None) -> TrunkOut:
         cfg, mask = self.cfg, b.atom_mask
         w_dt = torch.float64 if pos.dtype == torch.float64 else torch.float32
         mf = mask.to(w_dt)
@@ -225,7 +254,7 @@ class Trunk(nn.Module):
         )
         dsum = None if use_stage0_dsum else (compute_dsum(eg, self.stages[0].edge_cfg) if need_dsum else None)
         electro = self.electro(domain, b.pbc, bool(getattr(b, "periodic_electro", False)))
-        backend = self._electro_backend(b, pos, create_graph=create_graph) if electro else None
+        backend = self._electro_backend(b, pos, create_graph=create_graph, fixed_grid_shape=fixed_grid_shape) if electro else None
         s = self.embed(b.z).to(w_dt) * mf.unsqueeze(-1)
         vec = s.new_zeros(b.n_atoms, cfg.k_vec, 3)
         ten = inv2 = None

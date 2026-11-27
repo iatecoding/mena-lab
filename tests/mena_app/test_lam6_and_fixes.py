@@ -48,9 +48,11 @@ def test_models_add_lam6_gets_lam6_lots_and_rank(tmp_path: Path, monkeypatch: py
     entry = models.add("lam6-v1", str(ckpt))
     assert entry["backend"] == "lam4"
     assert entry["rank"] == {"crystal": 0, "slab": 0, "molecule": 1}
-    assert "oc25_rpbe" in entry["lots"]
-    assert "mad16_r2scan" in entry["lots"]
+    assert "oc20_rpbe" in entry["lots"]
+    assert "omc25_pbe" in entry["lots"]
     assert "omat_pbeU" in entry["lots"]
+    assert "oc25_rpbe" not in entry["lots"]
+    assert "mad16_r2scan" not in entry["lots"]
 
 
 def test_routing_lam6_aliases_slab_fallback_cuda_f64_and_advanced_knobs() -> None:

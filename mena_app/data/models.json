@@ -32,8 +32,6 @@
     "matpes_pbe",
     "matpes_r2scan",
     "oc20_rpbe",
-    "oc25_rpbe",
-    "mad16_r2scan",
     "omc25_pbe",
     "omol_wb97mv",
     "spice_wb97md3"
@@ -44,7 +42,7 @@
    ],
    "low_memory": true,
    "interpretable": true,
-   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OC25, MAD-1.6, OMC25, SPICE 2",
+   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OMC25, SPICE 2",
    "metrics": "Matbench Discovery: CPS 0.874, F1 0.904, κSRME 0.182. Molecules (OMol25 val): energy 2.00, forces 0.40 kcal/mol/Å. Physics heads: gap, Pauli overlap, unpaired electrons"
   },
   {
@@ -77,7 +75,6 @@
     "matpes_r2scan",
     "oc20_rpbe",
     "oc22_pbeU",
-    "omc25_pbe",
     "omol_wb97mv"
    ],
    "dtypes": [
@@ -85,7 +82,7 @@
     "float64"
    ],
    "low_memory": true,
-   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OC22, OMC25, OpenRxn26, SPICE 2",
+   "training": "OMol25, MPtrj, sAlex, OMat24, MatPES, OC20, OC22",
    "metrics": "Molecules (OMol25 held-out): energy 1.64, forces 0.34 kcal/mol/Å; PLF547 protein–ligand 0.297 kcal/mol"
   },
   {

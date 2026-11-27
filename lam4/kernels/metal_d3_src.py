@@ -68,7 +68,7 @@ inline void d3_accum_pair_r1(
     float3 d, int zi, int zj, int ni, int nj,
     const thread float pw_i[5], const thread float dpw_i[5],
     device const float* pw, float r2r4_i, device const float* r2r4,
-    device const float* c6_mat, float4 params0, float4 params1,
+    device const float* c6_mat, device const float* r0ab, float4 params0, float4 params1,
     int is_zero, int need_deriv, int need_forces, int need_stress, int j,
     thread float& acc_e, thread float& acc_dedcn, thread float3& acc_f,
     thread float3& acc_vd, thread float3& acc_vo
@@ -101,7 +101,7 @@ inline void d3_accum_pair_r1(
     float rb6 = rb4 * rb2, rb8 = rb4 * rb4;
     float A, dA_dr = 0.0f;
     if (is_zero != 0) {
-        float r0 = sqrt(max(q_ij, 1.0e-12f));
+        float r0 = max(r0ab[zi * 95 + zj], 1.0e-6f);
         float rb_s = max(r_b, 1.0e-6f);
         float u6 = (p_a1 * r0) / rb_s, u8 = r0 / rb_s;
         float u6_2 = u6 * u6, u8_2 = u8 * u8;
@@ -221,6 +221,7 @@ kernel void d3_ef_grouped(
     constant int& need_forces [[buffer(15)]],
     constant float4& params0 [[buffer(16)]],
     constant float4& params1 [[buffer(17)]],
+    device const float* r0ab [[buffer(18)]],
     uint tid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]
 ) {
@@ -251,7 +252,7 @@ kernel void d3_ef_grouped(
         if (j == i || mask[j] == 0) continue;
         float3 d = pi - float3(pos[3 * j], pos[3 * j + 1], pos[3 * j + 2]);
         int zj = int(clamp(z[j], 0L, 94L));
-        d3_accum_pair_r1(d, zi, zj, ni, n_ref[zj], pw_i, dpw_i, pw, r2r4_i, r2r4, c6_mat,
+        d3_accum_pair_r1(d, zi, zj, ni, n_ref[zj], pw_i, dpw_i, pw, r2r4_i, r2r4, c6_mat, r0ab,
                          params0, params1, is_zero, need_forces, need_forces, 0, j,
                          acc_e, acc_dedcn, acc_f, vd, vo);
     }
@@ -388,6 +389,7 @@ kernel void d3_ef_csr(
     constant int& flags [[buffer(18)]],
     constant float4& params0 [[buffer(19)]],
     constant float4& params1 [[buffer(20)]],
+    device const float* r0ab [[buffer(21)]],
     uint tid [[thread_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]
 ) {
@@ -423,7 +425,7 @@ kernel void d3_ef_csr(
         d = apply_shift_cell(d, shift, cell, e, gi, has_shift, has_cell);
         if (dot(d, d) <= 1.0e-12f) continue;
         int zj = int(clamp(z[j], 0L, 94L));
-        d3_accum_pair_r1(d, zi, zj, ni, n_ref[zj], pw_i, dpw_i, pw, r2r4_i, r2r4, c6_mat,
+        d3_accum_pair_r1(d, zi, zj, ni, n_ref[zj], pw_i, dpw_i, pw, r2r4_i, r2r4, c6_mat, r0ab,
                          params0, params1, is_zero, need_deriv, need_forces, need_stress, j,
                          acc_e, acc_dedcn, acc_f, vd, vo);
     }

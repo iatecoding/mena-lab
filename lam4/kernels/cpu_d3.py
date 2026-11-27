@@ -20,12 +20,12 @@ from torch import Tensor
 from lam.models.dispersion import WB97M_D3BJ
 from lam4.kernels.cpu_csr import CFLAGS, cpu_toolchain_ok
 from lam4.kernels.cpu_d3_src import CPU_D3_SOURCE
-from lam4.kernels.metal_d3 import d3_rank1_tables_np
+from lam4.kernels.metal_d3 import d3_r0ab_np, d3_rank1_tables_np
 
 _EXT: Any = None
 _FAILED: str | None = None
 _LOCK = threading.Lock()
-_TABLES: dict[torch.dtype, tuple[Tensor, Tensor, Tensor, Tensor, Tensor]] = {}
+_TABLES: dict[torch.dtype, tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]] = {}
 
 _MODE_PARAMS: dict[str, tuple[bool, float, float, float, float]] = {
     "bj_wb97m": (False, float(WB97M_D3BJ["s6"]), float(WB97M_D3BJ["s8"]), float(WB97M_D3BJ["a1"]), float(WB97M_D3BJ["a2"])),
@@ -96,7 +96,7 @@ def has_cpu_d3() -> bool:
     return get_cpu_d3_ext() is not None
 
 
-def _get_tables(dtype: torch.dtype) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+def _get_tables(dtype: torch.dtype) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     tabs = _TABLES.get(dtype)
     if tabs is None:
         rcov, r2r4, n_ref, cn_ref, c6_mat = d3_rank1_tables_np()
@@ -106,6 +106,7 @@ def _get_tables(dtype: torch.dtype) -> tuple[Tensor, Tensor, Tensor, Tensor, Ten
             torch.from_numpy(n_ref).to(dtype=torch.int32).contiguous(),
             torch.from_numpy(cn_ref).to(dtype=dtype).contiguous(),
             torch.from_numpy(c6_mat).to(dtype=dtype).contiguous(),
+            torch.from_numpy(d3_r0ab_np()).to(dtype=dtype).contiguous(),
         )
         _TABLES[dtype] = tabs
     return tabs
@@ -140,7 +141,7 @@ def cpu_d3_grouped(
         return torch.zeros(G, dtype=torch.float64), (torch.zeros((n_atoms, 3), dtype=dt) if compute_forces else None)
     ext = get_cpu_d3_ext()
     assert ext is not None
-    rcov, r2r4, n_ref, cn_ref, c6_mat = _get_tables(dt)
+    rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab = _get_tables(dt)
     is_zero, s6, s8, a1, a2 = _MODE_PARAMS[d3_mode]
     pos_c = pos.contiguous()
     z_c = z.to(torch.int64).contiguous()
@@ -148,7 +149,7 @@ def cpu_d3_grouped(
     ptr = (torch.tensor([0, n_atoms], dtype=torch.int32) if (G == 1 and group_ptr is None) else (_group_ptr(g_c, G) if group_ptr is None else group_ptr.to(torch.int32).contiguous()))
     mask_u8 = atom_mask.to(torch.uint8).contiguous() if atom_mask is not None else torch.empty(0, dtype=torch.uint8)
     e_atom, f_out = ext.d3_grouped(
-        pos_c, z_c, mask_u8, g_c, ptr, rcov, r2r4, n_ref, cn_ref, c6_mat,
+        pos_c, z_c, mask_u8, g_c, ptr, rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab,
         s6, s8, a1, a2, is_zero, bool(compute_forces),
     )
     e_graph = e_atom.sum(0, keepdim=True) if G == 1 else torch.zeros(G, dtype=torch.float64).index_add_(0, g_c, e_atom)
@@ -185,7 +186,7 @@ def cpu_d3_csr(
         )
     ext = get_cpu_d3_ext()
     assert ext is not None
-    rcov, r2r4, n_ref, cn_ref, c6_mat = _get_tables(dt)
+    rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab = _get_tables(dt)
     is_zero, s6, s8, a1, a2 = _MODE_PARAMS[d3_mode]
     pos_c = pos.contiguous()
     z_c = z.to(torch.int64).contiguous()
@@ -201,7 +202,7 @@ def cpu_d3_csr(
 
     e_atom, f_out, vir = ext.d3_csr(
         pos_c, z_c, mask_u8, g_c, rp_c, si_c, sh_c, cell_c, multi_cell,
-        rcov, r2r4, n_ref, cn_ref, c6_mat, s6, s8, a1, a2, is_zero, bool(compute_forces), do_stress,
+        rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab, s6, s8, a1, a2, is_zero, bool(compute_forces), do_stress,
     )
     e_graph = e_atom.sum(0, keepdim=True) if (G == 1 or graph is None) else torch.zeros(G, dtype=torch.float64).index_add_(0, g_c, e_atom)
     stress = None

@@ -72,7 +72,7 @@ __device__ __forceinline__ void d3_accum_pair_r1(
     float dx, float dy, float dz, int zi, int zj, int ni, int nj,
     const float pw_i[5], const float dpw_i[5],
     const float* __restrict__ pw, float r2r4_i, const float* __restrict__ r2r4,
-    const float* __restrict__ c6_mat,
+    const float* __restrict__ c6_mat, const float* __restrict__ r0ab,
     float s6, float s8, float p_a1, float p_a2,
     float r_cut, float taper_on, float inv_tspan,
     int is_zero, int need_deriv, int need_forces, int need_stress, int j,
@@ -102,7 +102,7 @@ __device__ __forceinline__ void d3_accum_pair_r1(
     float rb2 = r_b * r_b, rb4 = rb2 * rb2, rb6 = rb4 * rb2, rb8 = rb4 * rb4;
     float A, dA_dr = 0.0f;
     if (is_zero) {
-        float r0 = sqrtf(fmaxf(q_ij, 1.0e-12f));
+        float r0 = fmaxf(__ldg(r0ab + zi * 95 + zj), 1.0e-6f);
         float rb_s = fmaxf(r_b, 1.0e-6f);
         float u6 = (p_a1 * r0) / rb_s, u8 = r0 / rb_s;
         float u6_2 = u6 * u6, u8_2 = u8 * u8;
@@ -206,6 +206,7 @@ __global__ void cuda_d3_ef_k(
     const int64_t* __restrict__ graph, const int* __restrict__ ptr, const int* __restrict__ send_idx,
     const float* __restrict__ shift, const float* __restrict__ cell,
     const float* __restrict__ r2r4, const int* __restrict__ n_ref, const float* __restrict__ c6_mat,
+    const float* __restrict__ r0ab,
     const float* __restrict__ pw, const float* __restrict__ dpw,
     float* __restrict__ out_e, float* __restrict__ out_dedcn, float* __restrict__ out_f, float* __restrict__ out_vir,
     int n_atoms, int flags, float s6, float s8, float p_a1, float p_a2, float r_cut, float taper_on, float inv_tspan
@@ -244,7 +245,7 @@ __global__ void cuda_d3_ef_k(
         if (IS_CSR) apply_shift_cell(dx, dy, dz, shift, cell, lane, g, has_shift, has_cell);
         if (IS_CSR && (dx * dx + dy * dy + dz * dz) <= 1.0e-12f) continue;
         int zj = clamp_z94(z[j]);
-        d3_accum_pair_r1(dx, dy, dz, zi, zj, ni, __ldg(n_ref + zj), pw_i, dpw_i, pw, r2r4_i, r2r4, c6_mat,
+        d3_accum_pair_r1(dx, dy, dz, zi, zj, ni, __ldg(n_ref + zj), pw_i, dpw_i, pw, r2r4_i, r2r4, c6_mat, r0ab,
                          s6, s8, p_a1, p_a2, r_cut, taper_on, inv_tspan, is_zero, need_deriv, need_forces, need_stress, j,
                          acc_e, acc_de, fx, fy, fz, vxx, vyy, vzz, vxy, vxz, vyz);
     }
@@ -329,7 +330,7 @@ __global__ void cuda_d3_fcn_k(
 void cuda_d3_launch(
     torch::Tensor pos, torch::Tensor z, torch::Tensor mask, torch::Tensor graph,
     torch::Tensor ptr, torch::Tensor send_idx, torch::Tensor shift, torch::Tensor cell,
-    torch::Tensor rcov, torch::Tensor r2r4, torch::Tensor n_ref, torch::Tensor cn_ref, torch::Tensor c6_mat,
+    torch::Tensor rcov, torch::Tensor r2r4, torch::Tensor n_ref, torch::Tensor cn_ref, torch::Tensor c6_mat, torch::Tensor r0ab,
     torch::Tensor pw, torch::Tensor dpw, torch::Tensor out_e, torch::Tensor out_dedcn,
     torch::Tensor out_f, torch::Tensor out_vir,
     int64_t n_atoms, int64_t flags, bool is_csr,
@@ -348,7 +349,7 @@ void cuda_d3_launch(
         cuda_d3_ef_k<true><<<blocks, 128, 0, stream>>>(
             pos.data_ptr<float>(), z.data_ptr<int64_t>(), mask.data_ptr<uint8_t>(), graph.data_ptr<int64_t>(),
             ptr.data_ptr<int>(), send_idx.data_ptr<int>(), shift.data_ptr<float>(), cell.data_ptr<float>(),
-            r2r4.data_ptr<float>(), n_ref.data_ptr<int>(), c6_mat.data_ptr<float>(),
+            r2r4.data_ptr<float>(), n_ref.data_ptr<int>(), c6_mat.data_ptr<float>(), r0ab.data_ptr<float>(),
             pw.data_ptr<float>(), dpw.data_ptr<float>(),
             out_e.data_ptr<float>(), out_dedcn.data_ptr<float>(), out_f.data_ptr<float>(), out_vir.data_ptr<float>(),
             int(n_atoms), int(flags), float(s6), float(s8), float(p_a1), float(p_a2),
@@ -369,7 +370,7 @@ void cuda_d3_launch(
         cuda_d3_ef_k<false><<<blocks, 128, 0, stream>>>(
             pos.data_ptr<float>(), z.data_ptr<int64_t>(), mask.data_ptr<uint8_t>(), graph.data_ptr<int64_t>(),
             ptr.data_ptr<int>(), send_idx.data_ptr<int>(), shift.data_ptr<float>(), cell.data_ptr<float>(),
-            r2r4.data_ptr<float>(), n_ref.data_ptr<int>(), c6_mat.data_ptr<float>(),
+            r2r4.data_ptr<float>(), n_ref.data_ptr<int>(), c6_mat.data_ptr<float>(), r0ab.data_ptr<float>(),
             pw.data_ptr<float>(), dpw.data_ptr<float>(),
             out_e.data_ptr<float>(), out_dedcn.data_ptr<float>(), out_f.data_ptr<float>(), out_vir.data_ptr<float>(),
             int(n_atoms), int(flags), float(s6), float(s8), float(p_a1), float(p_a2),

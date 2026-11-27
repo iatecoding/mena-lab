@@ -209,6 +209,28 @@ def _relax_open_mol_microbatch(
             pos_per_mol[mol_i] = cur_pos[off : off + n].detach().clone()
             off += n
 
+    def _eval_ef(cur_pos: Tensor) -> tuple[Tensor, Tensor]:
+        nonlocal b, csr_plan, group_ptr, pos_ref
+        need_rebuild = True if eff_skin <= 0.0 else (float(((cur_pos - pos_ref) ** 2).sum(dim=-1).max().item()) > (0.5 * eff_skin) ** 2)
+        if need_rebuild:
+            writeback_positions(sub_ids, cur_pos)
+            b, csr_plan, group_ptr, pos_ref = _build_subbatch(calc, entries, [pos_per_mol[i] for i in sub_ids], r_list)
+        e_k, f_e = _eval_mol_subbatch_ef(calc, b, cur_pos, csr_plan, group_ptr, entries, need_forces=True)
+        assert f_e is not None
+        if rest_k_t is not None and rest_ref_t is not None:
+            dr_rest = cur_pos - rest_ref_t
+            e_rest_atom_kcal = (0.5 * rest_k_t * (dr_rest * dr_rest).sum(dim=-1)) / MOL_KCAL_TO_EV
+            e_k = e_k.index_add(0, b.graph, e_rest_atom_kcal.to(dtype=e_k.dtype))
+            f_e = f_e - rest_k_t.unsqueeze(-1) * dr_rest
+        if move_mask_t is not None:
+            f_e = f_e.masked_fill(~move_mask_t.unsqueeze(-1), 0.0)
+        return e_k, f_e
+
+    c1_armijo = 1e-4
+    eps_e = 1e-5 if dt == torch.float32 else 1e-10
+    max_ls = 5
+    e_kcal_t, f_ev_t = _eval_ef(pos)
+
     for step_idx in range(max_steps + 1):
         B = len(sub_ids)
         if step_idx > 0:
@@ -227,29 +249,16 @@ def _relax_open_mol_microbatch(
                 B = len(sub_ids)
                 active = torch.ones(B, dtype=torch.bool, device=dev)
                 act_np = np.ones(B, dtype=bool)
+                keep_t = torch.tensor(keep_local, dtype=torch.long, device=dev)
+                e_kcal_t = e_kcal_t.index_select(0, keep_t).contiguous()
+                f_ev_t = f_ev_t[keep_mask_atom].contiguous()
                 if pos_prev is not None and grad_prev is not None:
                     pos_prev = pos_prev[keep_mask_atom].contiguous()
                     grad_prev = grad_prev[keep_mask_atom].contiguous()
-                keep_t = torch.tensor(keep_local, dtype=torch.long, device=dev)
                 s_hist = [s[keep_mask_atom].contiguous() for s in s_hist]
                 y_hist = [y[keep_mask_atom].contiguous() for y in y_hist]
                 rho_hist = [r.index_select(0, keep_t).contiguous() for r in rho_hist]
-            else:
-                need_rebuild = True if eff_skin <= 0.0 else (float(((pos - pos_ref) ** 2).sum(dim=-1).max().item()) > (0.5 * eff_skin) ** 2)
-                if need_rebuild:
-                    writeback_positions(sub_ids, pos)
-                    b, csr_plan, group_ptr, pos_ref = _build_subbatch(calc, entries, [pos_per_mol[i] for i in sub_ids], r_list)
-                    pos = b.pos.clone()
 
-        e_kcal_t, f_ev_t = _eval_mol_subbatch_ef(calc, b, pos, csr_plan, group_ptr, entries, need_forces=True)
-        assert f_ev_t is not None
-        if rest_k_t is not None and rest_ref_t is not None:
-            dr_rest = pos - rest_ref_t
-            e_rest_atom_kcal = (0.5 * rest_k_t * (dr_rest * dr_rest).sum(dim=-1)) / MOL_KCAL_TO_EV
-            e_kcal_t = e_kcal_t.index_add(0, b.graph, e_rest_atom_kcal.to(dtype=e_kcal_t.dtype))
-            f_ev_t = f_ev_t - rest_k_t.unsqueeze(-1) * dr_rest
-        if move_mask_t is not None:
-            f_ev_t = f_ev_t.masked_fill(~move_mask_t.unsqueeze(-1), 0.0)
         f_atom_norm = f_ev_t.norm(dim=-1)
         fmax_t = torch.zeros(B, dtype=f_atom_norm.dtype, device=dev).scatter_reduce_(
             0, b.graph, f_atom_norm, reduce="amax", include_self=False
@@ -324,16 +333,79 @@ def _relax_open_mol_microbatch(
             r_vec = r_vec + (alphas[i_h] - beta_i).index_select(0, b.graph).unsqueeze(-1) * s_hist[i_h].to(acc_dt)
 
         dpos = (-r_vec).to(dt)
+        # Descent-direction guard: per-molecule fallback to damped steepest descent if dpos . grad >= 0 or non-finite
+        g_dot_d = bdot(grad, dpos, b.graph, B)
+        bad_dir = active & ((~torch.isfinite(g_dot_d)) | (g_dot_d >= 0.0))
+        if bool(bad_dir.any().item()):
+            dpos_sd = (-0.01 * grad).to(dt)
+            bad_atom = bad_dir.index_select(0, b.graph).unsqueeze(-1)
+            dpos = torch.where(bad_atom, dpos_sd, dpos)
+            for i_h in range(len(rho_hist)):
+                rho_hist[i_h] = torch.where(bad_dir, torch.zeros_like(rho_hist[i_h]), rho_hist[i_h])
+            g_dot_d = bdot(grad, dpos, b.graph, B)
+
         d_norm = dpos.norm(dim=-1)
         steplen = torch.zeros(B, dtype=d_norm.dtype, device=dev).scatter_reduce_(
             0, b.graph, d_norm, reduce="amax", include_self=False
         )
-        scale = torch.clamp(maxstep / steplen.clamp_min(1e-8), max=1.0)
+        scale = torch.clamp(maxstep / steplen.clamp_min(1e-8), max=1.0) if maxstep > 0.0 else torch.zeros_like(steplen)
         dpos = dpos * scale.index_select(0, b.graph).unsqueeze(-1)
-        act_atom = active.index_select(0, b.graph).unsqueeze(-1)
-        if move_mask_t is not None:
-            act_atom = act_atom & move_mask_t.unsqueeze(-1)
-        pos = torch.where(act_atom, pos + dpos, pos)
+        g_dot_d = g_dot_d * scale.to(acc_dt)
+
+        # Per-molecule independent Armijo backtracking line search (zero extra evals when alpha=1 accepts)
+        e_cur_ev = e_kcal_t.to(acc_dt) * MOL_KCAL_TO_EV
+        alpha_t = torch.ones(B, dtype=acc_dt, device=dev)
+        pending = active.clone()
+        pos_acc = pos.clone()
+        e_acc = e_kcal_t.clone()
+        f_acc = f_ev_t.clone()
+
+        for _ls in range(max_ls + 1):
+            pend_atom = pending.index_select(0, b.graph).unsqueeze(-1)
+            if move_mask_t is not None:
+                pend_atom = pend_atom & move_mask_t.unsqueeze(-1)
+            a_atom = alpha_t.to(dt).index_select(0, b.graph).unsqueeze(-1)
+            pos_try = torch.where(pend_atom, pos + a_atom * dpos, pos_acc)
+            e_try_kcal, f_try_ev = _eval_ef(pos_try)
+            e_try_ev = e_try_kcal.to(acc_dt) * MOL_KCAL_TO_EV
+            armijo_ok = torch.isfinite(e_try_ev) & (e_try_ev <= e_cur_ev + c1_armijo * alpha_t * g_dot_d + eps_e)
+            newly_acc = pending & armijo_ok
+            if bool(newly_acc.any().item()):
+                na_atom = newly_acc.index_select(0, b.graph).unsqueeze(-1)
+                pos_acc = torch.where(na_atom, pos_try, pos_acc)
+                e_acc = torch.where(newly_acc, e_try_kcal, e_acc)
+                f_acc = torch.where(na_atom, f_try_ev, f_acc)
+                pending = pending & (~newly_acc)
+            if not bool(pending.any().item()):
+                break
+            alpha_t = torch.where(pending, 0.5 * alpha_t, alpha_t)
+
+        # Fallback for any molecule still failing Armijo after backtracking: reset curvature + tiny damped SD step
+        if bool(pending.any().item()):
+            for i_h in range(len(rho_hist)):
+                rho_hist[i_h] = torch.where(pending, torch.zeros_like(rho_hist[i_h]), rho_hist[i_h])
+            sd_step = (-0.002 * grad).to(dt)
+            sd_norm = sd_step.norm(dim=-1)
+            sd_len = torch.zeros(B, dtype=sd_norm.dtype, device=dev).scatter_reduce_(
+                0, b.graph, sd_norm, reduce="amax", include_self=False
+            )
+            sd_cap = min(maxstep, 0.02) if maxstep > 0.0 else 0.0
+            sd_scale = torch.clamp(sd_cap / sd_len.clamp_min(1e-8), max=1.0) if sd_cap > 0.0 else torch.zeros_like(sd_len)
+            sd_step = sd_step * sd_scale.index_select(0, b.graph).unsqueeze(-1)
+            pend_atom = pending.index_select(0, b.graph).unsqueeze(-1)
+            if move_mask_t is not None:
+                pend_atom = pend_atom & move_mask_t.unsqueeze(-1)
+            pos_try = torch.where(pend_atom, pos + sd_step, pos_acc)
+            e_try_kcal, f_try_ev = _eval_ef(pos_try)
+            e_try_ev = e_try_kcal.to(acc_dt) * MOL_KCAL_TO_EV
+            sd_ok = pending & torch.isfinite(e_try_ev) & (e_try_ev <= e_cur_ev + eps_e)
+            if bool(sd_ok.any().item()):
+                ok_atom = sd_ok.index_select(0, b.graph).unsqueeze(-1)
+                pos_acc = torch.where(ok_atom, pos_try, pos_acc)
+                e_acc = torch.where(sd_ok, e_try_kcal, e_acc)
+                f_acc = torch.where(ok_atom, f_try_ev, f_acc)
+
+        pos, e_kcal_t, f_ev_t = pos_acc, e_acc, f_acc
 
     writeback_positions(sub_ids, pos)
     out_list: list[dict[str, Any]] = []

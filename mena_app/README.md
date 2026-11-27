@@ -2,7 +2,7 @@
 
 # Mena-Lab
 
-> I am an ML student. I used my personal resources (money and time) and ran multiple iterations to reach this level. I hope this is in some ways beneficial to the field and to the community. Give me your feedback.
+> I am a student, I used my personal resources (money and time) and ran multiple iterations to reach this level. I hope this is in some ways beneficial to the field and to the community. Keep an open minded and proactive approach testing this, open to feedbacks. Leave a star if you liked this
 
 Mena-Lab runs fast machine-learned interatomic potentials for molecules, crystals, and surfaces on your own computer (Windows, macOS, Linux; CPU, NVIDIA GPU, or Apple Silicon). It includes a local web app, a command-line interface, and an ASE-compatible Python API.
 
@@ -17,10 +17,16 @@ Everything runs on standard PyTorch with GPU acceleration on Apple Silicon and N
 
 ![Mena-Lab local web UI: Caffeine vibrations and IR/Raman spectrum, followed by CsSnI3 perovskite phonon band structure](docs/demo.gif)
 
-## Install
+## Install & update
 
 ```bash
 pip install https://github.com/iatecoding/mena-lab/archive/refs/heads/main.zip
+```
+
+To update an existing install to the latest release (keeps your downloaded model weights, history, and settings intact):
+
+```bash
+pip install --upgrade https://github.com/iatecoding/mena-lab/archive/refs/heads/main.zip
 ```
 
 Requires Python 3.10 or newer. On an NVIDIA GPU, install the CUDA build of [PyTorch](https://pytorch.org/get-started/locally/) first.
@@ -63,7 +69,7 @@ atoms.calc = calculator("lam6-v1", lot="matpes_r2scan")  # or lot="auto" / "mp_p
 
 | Model | Default for | Highlights |
 |---|---|---|
-| **Mena-LAM-6 (`lam6-v1`)** | Crystals & surfaces | Matbench Discovery CPS `0.874`, F1 `0.904`, κ<sub>SRME</sub> `0.182` (0/103 imaginary modes); X23 molecular crystals `2.28%` volume MAPE (`1.64 kcal/mol`); OC20/OC25/MAD-1.6 catalysis & OMC25; electronic descriptors via `--explain` |
+| **Mena-LAM-6 (`lam6-v1`)** | Crystals & surfaces | Matbench Discovery CPS `0.874`, F1 `0.904`, κ<sub>SRME</sub> `0.182` (0/103 imaginary modes); X23 molecular crystals `2.28%` volume MAPE (`1.64 kcal/mol`); OC20 catalysis & OMC25; electronic descriptors via `--explain` |
 | **Mena-LAM-s (`lam5-v1`)** | Molecules | OMol25 held-out `1.64 kcal/mol` E, `0.34 kcal/mol/Å` F; PLF547 protein–ligand `0.297 kcal/mol` vs. CCSD(T); X23 molecular crystals `1.40 kcal/mol` (`2.67%` Vol MAPE) via 3D periodic SPME; TorsionNet500 `0.205 kcal/mol`; charges, dipole, polarizability, IR & Raman |
 | **Mena-LAM-preview (`lam-400k`)** | Comparison | Earlier materials checkpoint; Matbench Discovery F1 `0.905`, CPS `0.849`, κ<sub>SRME</sub> `0.307`; DynaMat MD CMDS `0.787` |
 
@@ -94,10 +100,9 @@ To pick another functional explicitly:
 | **Bulk crystals** | `mp_pbe`, `mp_pbeU` | PBE / PBE+U (Materials Project, PBE\_52) | `lam6-v1`, `lam5-v1`, `lam-400k` |
 | | `omat_pbe`, `omat_pbeU` | PBE / PBE+U (OMat24, PBE\_54) | `lam6-v1`, `lam-400k` |
 | | `matpes_pbe`, `matpes_r2scan` | PBE / r²SCAN (MatPES, PBE\_64) | `lam6-v1`, `lam-400k` (`r2scan` also `lam5-v1`) |
-| | `mad16_r2scan` | r²SCAN (MAD-1.6 aims\_tight) | `lam6-v1` |
-| **Surfaces & catalysis** | `oc20_rpbe`, `oc25_rpbe` | RPBE (OC20 / OC25 catalysis) | `lam6-v1` (`oc20_rpbe` also `lam5-v1`) |
+| **Surfaces & catalysis** | `oc20_rpbe` | RPBE (OC20 catalysis) | `lam6-v1`, `lam5-v1` |
 | | `oc22_pbeU` | PBE+U (OC22 oxide catalysis) | `lam5-v1` |
-| **Molecular crystals & liquids** | `omc25_pbe` | PBE+D3 (OMC25) | `lam6-v1`, `lam5-v1` |
+| **Molecular crystals & liquids** | `omc25_pbe` | PBE+D3 (OMC25) | `lam6-v1` |
 | **Molecules & 3D periodic molecular boxes** | `omol_wb97mv` | ωB97M-V/def2-TZVPD (OMol25; 3D SPME under PBC) | `lam5-v1`, `lam6-v1`, `lam-400k` |
 | | `spice_wb97md3` | ωB97M-D3(BJ)/def2-TZVPPD (SPICE 2; 3D SPME under PBC) | `lam6-v1` |
 

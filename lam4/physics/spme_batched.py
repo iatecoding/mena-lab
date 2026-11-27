@@ -110,8 +110,21 @@ def good_fft_size(n: int, min_size: int = 8) -> int:
         v += 2
 
 
-def select_spme_grid(cells: Tensor, spacing: float = 0.8, min_size: int = 8) -> tuple[int, int, int]:
+def normalize_spme_grid(grid_shape: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Validate and normalize a 3-tuple of SPME FFT mesh dimensions."""
+    if len(grid_shape) != 3:
+        raise ValueError(f"fixed_grid_shape must be a 3-tuple (m1, m2, m3), got {grid_shape!r}")
+    m = (int(grid_shape[0]), int(grid_shape[1]), int(grid_shape[2]))
+    if min(m) < 2:
+        raise ValueError(f"SPME grid dimensions must be >= 2, got {m!r}")
+    return m
+
+
+def select_spme_grid(cells: Tensor, spacing: float = 0.8, min_size: int = 8, *,
+                     fixed_grid_shape: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
     """Select smooth even 2^a 3^b 5^c FFT grid for arbitrary orthorhombic or triclinic periodic cells."""
+    if fixed_grid_shape is not None:
+        return normalize_spme_grid(fixed_grid_shape)
     c_det = cells.detach()
     if c_det.ndim == 2:
         c_det = c_det.unsqueeze(0)
@@ -143,8 +156,11 @@ def select_spme_grid(cells: Tensor, spacing: float = 0.8, min_size: int = 8) -> 
 
 
 def select_grid_bucket(cells: Tensor, spacing: float = 0.8,
-                       buckets: tuple[tuple[int, int, int], ...] = DEFAULT_GRID_BUCKETS) -> tuple[int, int, int]:
+                       buckets: tuple[tuple[int, int, int], ...] = DEFAULT_GRID_BUCKETS, *,
+                       fixed_grid_shape: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
     """Select the smallest static FFT grid bucket guaranteeing effective spacing <= spacing outside trace."""
+    if fixed_grid_shape is not None:
+        return normalize_spme_grid(fixed_grid_shape)
     lengths = cells.detach().norm(dim=-1)
     valid = lengths.sum(-1) > 0
     if not bool(valid.any()):
@@ -255,7 +271,7 @@ class BatchedSPME:
 
     def __init__(self, pos: Tensor, cell: Tensor, graph: Tensor, atom_mask: Tensor, graph_mask: Tensor,
                  sigma: float = SIGMA, grid_shape: tuple[int, int, int] = (16, 16, 16), order: int = 4,
-                 active: bool = True) -> None:
+                 active: bool = True, fixed_grid_shape: tuple[int, int, int] | None = None) -> None:
         with fp32_guard(pos.device, disable_tf32=True):
             self.pos = upcast_fp32(pos)
             self.cell = upcast_fp32(cell)
@@ -263,7 +279,9 @@ class BatchedSPME:
             self.atom_mask = atom_mask.bool()
             self.graph_mask = graph_mask.bool()
             self.sigma = float(sigma)
-            self.grid_shape = (int(grid_shape[0]), int(grid_shape[1]), int(grid_shape[2]))
+            self.fixed_grid_shape = None if fixed_grid_shape is None else normalize_spme_grid(fixed_grid_shape)
+            eff_grid = self.fixed_grid_shape if self.fixed_grid_shape is not None else grid_shape
+            self.grid_shape = (int(eff_grid[0]), int(eff_grid[1]), int(eff_grid[2]))
             self.order = int(order)
             self.active = bool(active)
             self.n_graphs = int(cell.shape[0])

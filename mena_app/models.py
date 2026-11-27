@@ -74,14 +74,14 @@ VALID_DOMAINS = ("molecule", "crystal", "slab")
 
 DEFAULT_LOTS = {
     "lam": ["mp_pbe", "mp_pbeU", "omat_pbe", "omat_pbeU", "matpes_pbe", "matpes_r2scan", "omol_wb97mv"],
-    # distinct, validated levels of theory only: omat_pbe / matpes_pbe share mp_pbe's state on lam5, omat_pbeU shares mp_pbeU's,
-    # and openrxn_wb97xd / spice_wb97md3 give unreliable forces on lam5 molecules
-    "lam4": ["mp_pbe", "mp_pbeU", "matpes_r2scan", "oc20_rpbe", "oc22_pbeU", "omc25_pbe", "omol_wb97mv"],
+    # distinct, trained levels of theory only: omat_pbe / matpes_pbe share mp_pbe's state on lam5, omat_pbeU shares mp_pbeU's,
+    # and omc25_pbe / openrxn_wb97xd / spice_wb97md3 were not trained in lam5
+    "lam4": ["mp_pbe", "mp_pbeU", "matpes_r2scan", "oc20_rpbe", "oc22_pbeU", "omol_wb97mv"],
 }
 
 LAM6_DEFAULT_LOTS = [
     "mp_pbe", "mp_pbeU", "omat_pbe", "omat_pbeU", "matpes_pbe", "matpes_r2scan",
-    "oc20_rpbe", "oc25_rpbe", "mad16_r2scan", "omc25_pbe", "omol_wb97mv", "spice_wb97md3",
+    "oc20_rpbe", "omc25_pbe", "omol_wb97mv", "spice_wb97md3",
 ]
 
 

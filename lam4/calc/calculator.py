@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 
 from lam4.calc.batched import eval_batch_frames, format_calc_summary
-from lam4.calc.loader import load_lam4_checkpoint
+from lam4.calc.loader import load_lam4_checkpoint, warn_or_raise_untrained_lot
 from lam4.calc.physics import (
     CRYSTAL_EV, E_ANG_TO_DEBYE, MOL_KCAL_TO_EV, _get_d3, auto_covalent_fragments,
     build_energy_decomposition, effective_periodic_cell, eval_dispersion_device, eval_dispersion_single,
@@ -25,7 +25,7 @@ from lam4.calc.verlet import _try_pin_empty, build_or_reuse_batch, ref_energies_
 from lam4.data.batch import GraphBatch
 from lam4.model import Lam4Model
 
-_TERM_KEYS = ("stage0", "stage1", "final", "iso")
+_TERM_KEYS = ("stage0", "stage1", "final", "iso", "iso_atom")
 
 
 class MenaCalculator(Calculator):
@@ -43,7 +43,7 @@ class MenaCalculator(Calculator):
         low_memory: bool = False, edge_mode: str = "auto", csr_check: bool = True,
         compile: bool | str = False, compile_check: bool = True,
         charge: float | None = None, spin: int | None = None, u_flag: int | None = None,
-        lock_lot: bool = True, add_dispersion: bool = True, add_ref: bool = True,
+        lock_lot: bool = True, allow_untrained_lot: bool = True, add_dispersion: bool = True, add_ref: bool = True,
         compute_forces: bool = True, compute_stress: bool | str = "auto", zero_net_force: bool = False,
         auto_fragments: str | bool = "auto", interpret: bool = False, **kwargs: Any,
     ) -> None:
@@ -57,6 +57,7 @@ class MenaCalculator(Calculator):
         self.precision = str(self.meta.get("precision", precision))
         self.lot = str(lot)
         self.lock_lot = bool(lock_lot)
+        self.allow_untrained_lot = bool(allow_untrained_lot)
         self.skin = max(0.0, float(skin))
         self.low_memory = bool(low_memory)
         self.charge_override, self.spin_override, self.u_override = charge, spin, u_flag
@@ -113,14 +114,18 @@ class MenaCalculator(Calculator):
 
     def _resolve_lot_cached(self, atoms: Atoms, z_np: np.ndarray | None = None) -> tuple[Any, int]:
         if not self.lock_lot:
-            return resolve_lot_and_u(atoms, self.lot, self.u_override)
+            src, u_val = resolve_lot_and_u(atoms, self.lot, self.u_override)
+            warn_or_raise_untrained_lot(self, src.name)
+            return src, u_val
         z_arr = np.asarray(atoms.get_atomic_numbers(), dtype=np.int64) if z_np is None else z_np
         pbc_t = tuple(bool(x) for x in atoms.get_pbc())
         sig = (z_arr.tobytes(), pbc_t, atoms.info.get("lot"), atoms.info.get("u_flag"), self.lot, self.u_override)
         cached = self._lot_cache
         if cached is not None and cached[0] == sig:
+            warn_or_raise_untrained_lot(self, cached[1].name)
             return cached[1], cached[2]
         src, u_val = resolve_lot_and_u(atoms, self.lot, self.u_override)
+        warn_or_raise_untrained_lot(self, src.name)
         self._lot_cache = (sig, src, u_val)
         return src, u_val
 

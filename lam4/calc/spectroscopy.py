@@ -67,6 +67,7 @@ def build_energy_decomposition(
         "stage1": term_sums_kcal.get("stage1", 0.0),
         "final": term_sums_kcal.get("final", 0.0),
         "iso": term_sums_kcal.get("iso", 0.0),
+        "iso_atom": term_sums_kcal.get("iso_atom", 0.0),
         "electrostatic": coul_kcal,
         "polarization": pol_kcal,
         "repulsion": rep_kcal,

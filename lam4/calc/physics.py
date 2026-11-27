@@ -1,6 +1,7 @@
 """Physical unit conversions, LoT routing, dispersion add-back, and interpretability helpers for MenaCalculator."""
 from __future__ import annotations
 
+import math
 import threading
 from typing import Any, Sequence
 import warnings
@@ -15,6 +16,7 @@ from lam.models.dispersion import ANGSTROM_TO_BOHR, D3_K1, D3_K3, D3BJ, HARTREE_
 from lam.units import EV as CRYSTAL_EV
 from lam4.core.angular import l2_mat6
 from lam4.data.crystal import mp_hubbard_u_atoms
+from lam4.kernels.metal_d3 import d3_cutoff_for_mode, d3_r0ab_np
 from lam4.registry import CRYSTAL, LAM6_LOT_SPECS, XC_ID, build_sources
 from lam4.registry.sources import Source, lot_ids
 
@@ -50,6 +52,7 @@ LOT_ALIASES: dict[str, str] = {
 
 _SOURCES_CACHE: dict[str, Source] | None = None
 _D3_CACHE: dict[tuple[str, torch.dtype], D3BJ] = {}
+_R0AB_CACHE: dict[tuple[str, torch.dtype], Tensor] = {}
 _VESIN_TLS = threading.local()
 
 
@@ -288,8 +291,27 @@ def _get_d3(device: torch.device, dtype: torch.dtype) -> D3BJ:
     return mod
 
 
-def _d3_zero_pbe_sparse(d3: D3BJ, z: Tensor, edge_index: Tensor, edge_diff: Tensor) -> Tensor:
-    """PBE-D3(0) zero-damping dispersion energy (kcal/mol) for periodic OMC25 molecular crystals."""
+def _get_r0ab(device: torch.device, dtype: torch.dtype) -> Tensor:
+    key = (str(device), dtype)
+    tab = _R0AB_CACHE.get(key)
+    if tab is None:
+        tab = torch.from_numpy(d3_r0ab_np().reshape(95, 95)).to(device=device, dtype=dtype).contiguous()
+        _R0AB_CACHE[key] = tab
+    return tab
+
+
+def _d3_zero_pbe_sparse(
+    d3: D3BJ,
+    z: Tensor,
+    edge_index: Tensor,
+    edge_diff: Tensor,
+    *,
+    r_cut: float = 20.0,
+    cn_cut: float = 20.0,
+    cell: Tensor | None = None,
+    bulk_tail_cut: float | None = None,
+) -> Tensor:
+    """PBE-D3(0) zero-damping dispersion energy (kcal/mol) with Grimme's exact `r0ab` and 20 A cutoff."""
     s6, s8, rs6, alp = 1.0, 0.722, 1.217, 14.0
     n = z.shape[0]
     zc = z.clamp(max=d3.rcov.shape[0] - 1)
@@ -298,22 +320,33 @@ def _d3_zero_pbe_sparse(d3: D3BJ, z: Tensor, edge_index: Tensor, edge_diff: Tens
     r_bohr = r_ang * ANGSTROM_TO_BOHR
     zi, zj = zc[ei], zc[ej]
     rr = (d3.rcov[zi] + d3.rcov[zj]) / r_bohr.clamp_min(1e-6)
-    damp = (1.0 / (1.0 + torch.exp(-D3_K1 * (rr - 1.0)))) * (r_bohr <= d3.cn_cut * ANGSTROM_TO_BOHR)
+    damp = (1.0 / (1.0 + torch.exp(-D3_K1 * (rr - 1.0)))) * (r_bohr <= cn_cut * ANGSTROM_TO_BOHR)
     cn = damp.new_zeros(n).index_add_(0, ei, damp)
     refs = d3.c6ab_flat.index_select(0, zi * d3.c6ab.shape[1] + zj)
     cn0 = refs[..., 0]
     r2 = (refs[..., 1] - cn[ei].unsqueeze(-1)) ** 2 + (refs[..., 2] - cn[ej].unsqueeze(-1)) ** 2
     c6 = (torch.softmax(torch.where(cn0 > 0.0, D3_K3 * r2, torch.full_like(r2, -1e20)), dim=-1) * cn0).sum(-1)
-    r0_ij = torch.sqrt(3.0 * d3.r2r4[zi] * d3.r2r4[zj]).clamp_min(1e-6)
+    r0_ij = _get_r0ab(z.device, edge_diff.dtype)[zi, zj].clamp_min(1e-6)
     c8 = 3.0 * c6 * d3.r2r4[zi] * d3.r2r4[zj]
     f6 = 1.0 / (1.0 + 6.0 * (r_bohr / (rs6 * r0_ij)).pow(-alp))
     f8 = 1.0 / (1.0 + 6.0 * (r_bohr / r0_ij).pow(-(alp + 2.0)))
     r2_b = r_bohr.pow(2)
     r6 = r2_b.pow(3)
-    t = ((r_ang - d3.taper_on) / max(1e-6, d3.r_cut - d3.taper_on)).clamp(0.0, 1.0)
-    taper = 1.0 - t * t * t * (10.0 + t * (6.0 * t - 15.0))
-    ep = -0.5 * (s6 * c6 * f6 / r6.clamp_min(1e-12) + s8 * c8 * f8 / (r6 * r2_b).clamp_min(1e-12)) * taper * (r_ang <= d3.r_cut)
-    return (ep.sum() * HARTREE_TO_KCAL).unsqueeze(0)
+    ep = -0.5 * (s6 * c6 * f6 / r6.clamp_min(1e-12) + s8 * c8 * f8 / (r6 * r2_b).clamp_min(1e-12)) * (r_ang <= r_cut)
+    e_ha = ep.sum()
+    if bulk_tail_cut is not None and float(bulk_tail_cut) > r_cut and cell is not None:
+        zi_a, zj_a = zc[:, None], zc[None, :]
+        ref_all = d3.c6ab[zi_a, zj_a].reshape(n, n, 25, 3)
+        c6r_a = ref_all[..., 0]
+        r2_a = (ref_all[..., 1] - cn[:, None, None]) ** 2 + (ref_all[..., 2] - cn[None, :, None]) ** 2
+        c6_all = (torch.softmax(torch.where(c6r_a > 0.0, D3_K3 * r2_a, torch.full_like(r2_a, -1e20)), dim=-1) * c6r_a).sum(-1)
+        c8_all = 3.0 * c6_all * d3.r2r4[zi_a] * d3.r2r4[zj_a]
+        vol_b = torch.abs(torch.linalg.det(cell)) * (ANGSTROM_TO_BOHR ** 3)
+        a_b, b_b = r_cut * ANGSTROM_TO_BOHR, float(bulk_tail_cut) * ANGSTROM_TO_BOHR
+        i6 = 4.0 * math.pi * (a_b ** -3 - b_b ** -3) / 3.0
+        i8 = 4.0 * math.pi * (a_b ** -5 - b_b ** -5) / 5.0
+        e_ha = e_ha - 0.5 * (s6 * c6_all.sum() * i6 + s8 * c8_all.sum() * i8) / vol_b.clamp_min(1e-12)
+    return (e_ha * HARTREE_TO_KCAL).unsqueeze(0)
 
 
 def _unpack_d3_host(e_t: Tensor, f_t: Tensor | None, s_t: Tensor | None, n: int) -> tuple[float, np.ndarray | None, np.ndarray | None]:
@@ -335,6 +368,7 @@ def eval_dispersion_device(
     z_np: np.ndarray, pos_np: np.ndarray, cell_np: np.ndarray | None, pbc_flags: tuple[bool, bool, bool],
     d3_mode: str | None, device: torch.device, dtype: torch.dtype, *, compute_forces: bool = True, compute_stress: bool = False,
     z_t: Tensor | None = None, pos_t: Tensor | None = None, cell_t: Tensor | None = None,
+    bulk_tail_cut: float | None = None,
 ) -> tuple[bool, Any, Any, Any]:
     """Evaluate dispersion, returning `(on_device, E, F, S)`.
 
@@ -348,7 +382,13 @@ def eval_dispersion_device(
     pos_np, _ = center_positions_f64(pos_np)
     pbc_any = bool(any(pbc_flags))
     eff_stress = bool(compute_stress and pbc_any)
-    if device.type == "cuda" and dtype == torch.float32 and d3_mode in ("bj_wb97m", "zero_pbe"):
+    d3_cut = d3_cutoff_for_mode(d3_mode)
+    use_bulk_tail = bool(
+        d3_mode == "zero_pbe" and bulk_tail_cut is not None and float(bulk_tail_cut) > d3_cut
+        and all(pbc_flags) and cell_np is not None
+        and abs(float(np.linalg.det(np.asarray(cell_np, dtype=np.float64)))) > 1e-8
+    )
+    if not use_bulk_tail and device.type == "cuda" and dtype == torch.float32 and d3_mode in ("bj_wb97m", "zero_pbe"):
         td3 = _get_triton_d3()
         if td3 is not None and getattr(td3, "has_triton_d3", lambda *a: False)(device):
             try:
@@ -363,7 +403,7 @@ def eval_dispersion_device(
                     else:
                         from lam4.calc.d3_nl_cache import d3_csr_list
 
-                        rp, send_i32 = d3_csr_list(z_np, pos_raw, 12.0, device)
+                        rp, send_i32 = d3_csr_list(z_np, pos_raw, d3_cut, device)
                         e_t, f_t, s_t = td3.triton_d3_csr(
                             zd, pd, rp, send_i32, d3_mode=d3_mode, compute_forces=compute_forces, compute_stress=False,
                         )
@@ -371,7 +411,7 @@ def eval_dispersion_device(
                     from lam4.calc.d3_nl_cache import d3_csr_periodic_list
 
                     c_np = np.eye(3, dtype=np.float64) * 100.0 if cell_np is None else np.asarray(cell_np, dtype=np.float64)
-                    rp, send_i32, shift_f32 = d3_csr_periodic_list(z_np, pos_raw, c_np, pbc_flags, 12.0, device)
+                    rp, send_i32, shift_f32 = d3_csr_periodic_list(z_np, pos_raw, c_np, pbc_flags, d3_cut, device)
                     cd = cell_t.detach() if (cell_t is not None and cell_t.device == device and cell_t.dtype == torch.float32) else torch.as_tensor(c_np, dtype=torch.float32, device=device).unsqueeze(0)
                     e_t, f_t, s_t = td3.triton_d3_csr(
                         zd, pd, rp, send_i32, edge_shift=shift_f32, cell=cd,
@@ -380,7 +420,7 @@ def eval_dispersion_device(
                 return True, e_t[0], (f_t if compute_forces else None), (s_t[0] if (eff_stress and s_t is not None) else None)
             except Exception:
                 pass
-    if device.type == "mps" and dtype == torch.float32 and d3_mode in ("bj_wb97m", "zero_pbe"):
+    if not use_bulk_tail and device.type == "mps" and dtype == torch.float32 and d3_mode in ("bj_wb97m", "zero_pbe"):
         from lam4.kernels.metal_d3 import has_metal_d3, metal_d3_csr_full, metal_d3_grouped
 
         if has_metal_d3():
@@ -394,13 +434,13 @@ def eval_dispersion_device(
                     else:
                         from lam4.calc.d3_nl_cache import d3_csr_list
 
-                        rp, send_i32 = d3_csr_list(z_np, pos_raw, 12.0, device)
+                        rp, send_i32 = d3_csr_list(z_np, pos_raw, d3_cut, device)
                         e_t, f_t, s_t = metal_d3_csr_full(zd, pd, rp, send_i32, d3_mode=d3_mode, compute_forces=compute_forces, compute_stress=False)
                 else:
                     from lam4.calc.d3_nl_cache import d3_csr_periodic_list
 
                     c_np = np.eye(3, dtype=np.float64) * 100.0 if cell_np is None else np.asarray(cell_np, dtype=np.float64)
-                    rp, send_i32, shift_f32 = d3_csr_periodic_list(z_np, pos_raw, c_np, pbc_flags, 12.0, device)
+                    rp, send_i32, shift_f32 = d3_csr_periodic_list(z_np, pos_raw, c_np, pbc_flags, d3_cut, device)
                     cd = cell_t.detach() if (cell_t is not None and cell_t.device == device and cell_t.dtype == torch.float32) else torch.as_tensor(c_np, dtype=torch.float32, device=device).unsqueeze(0)
                     e_t, f_t, s_t = metal_d3_csr_full(
                         zd, pd, rp, send_i32, edge_shift=shift_f32, cell=cd,
@@ -409,7 +449,7 @@ def eval_dispersion_device(
                 return True, e_t[0], (f_t if compute_forces else None), (s_t[0] if (eff_stress and s_t is not None) else None)
             except Exception:
                 pass
-    if device.type == "cpu" and dtype in (torch.float32, torch.float64) and d3_mode in ("bj_wb97m", "zero_pbe"):
+    if not use_bulk_tail and device.type == "cpu" and dtype in (torch.float32, torch.float64) and d3_mode in ("bj_wb97m", "zero_pbe"):
         from lam4.kernels.cpu_d3 import cpu_d3_csr, cpu_d3_grouped, has_cpu_d3
 
         if has_cpu_d3():
@@ -423,13 +463,13 @@ def eval_dispersion_device(
                     else:
                         from lam4.calc.d3_nl_cache import d3_csr_list
 
-                        rp, send_i32 = d3_csr_list(z_np, pos_raw, 12.0, device)
+                        rp, send_i32 = d3_csr_list(z_np, pos_raw, d3_cut, device)
                         e_t, f_t, s_t = cpu_d3_csr(zd, pd, rp, send_i32, d3_mode=d3_mode, compute_forces=compute_forces, compute_stress=False)
                 else:
                     from lam4.calc.d3_nl_cache import d3_csr_periodic_list
 
                     c_np = np.eye(3, dtype=np.float64) * 100.0 if cell_np is None else np.asarray(cell_np, dtype=np.float64)
-                    rp, send_i32, shift_f32 = d3_csr_periodic_list(z_np, pos_raw, c_np, pbc_flags, 12.0, device)
+                    rp, send_i32, shift_f32 = d3_csr_periodic_list(z_np, pos_raw, c_np, pbc_flags, d3_cut, device)
                     cd = torch.as_tensor(c_np, dtype=dtype).unsqueeze(0)
                     e_t, f_t, s_t = cpu_d3_csr(
                         zd, pd, rp, send_i32, edge_shift=shift_f32, cell=cd,
@@ -459,7 +499,7 @@ def eval_dispersion_device(
             eps = None
         else:
             c_np = np.eye(3, dtype=np.float64) * 100.0 if cell_np is None else cell_np
-            ei, es = build_edge_tensors(pos_np, c_np, pbc_flags, d3.r_cut, dtype, device=device)
+            ei, es = build_edge_tensors(pos_np, c_np, pbc_flags, d3_cut, dtype, device=device)
             ei, es = ei.to(device), es.to(device)
             send, recv = ei[0], ei[1]
             pos_cur, eps = leaf, None
@@ -471,7 +511,14 @@ def eval_dispersion_device(
                 cd = cd + cd @ sym
             diff = pos_cur.index_select(0, send) - pos_cur.index_select(0, recv) + (es @ cd if pbc_any else 0.0)
             e_idx = torch.stack([recv, send], dim=0)
-            e_t = _d3_zero_pbe_sparse(d3, zd, e_idx, diff) if d3_mode == "zero_pbe" else d3.forward_sparse(zd, pos_cur, torch.zeros_like(zd), 1, e_idx, edge_diff=-diff)
+            if d3_mode == "zero_pbe":
+                e_t = _d3_zero_pbe_sparse(
+                    d3, zd, e_idx, diff, r_cut=d3_cut, cn_cut=d3_cut,
+                    cell=(cd if use_bulk_tail else None),
+                    bulk_tail_cut=(float(bulk_tail_cut) if use_bulk_tail else None),
+                )
+            else:
+                e_t = d3.forward_sparse(zd, pos_cur, torch.zeros_like(zd), 1, e_idx, edge_diff=-diff)
         f_dev = s_dev = None
         if need_grad:
             wrt = ([leaf] if compute_forces else []) + ([eps] if (eff_stress and eps is not None) else [])
@@ -488,10 +535,12 @@ def eval_dispersion_device(
 def eval_dispersion_single(
     z_np: np.ndarray, pos_np: np.ndarray, cell_np: np.ndarray | None, pbc_flags: tuple[bool, bool, bool],
     d3_mode: str | None, device: torch.device, dtype: torch.dtype, *, compute_forces: bool = True, compute_stress: bool = False,
+    bulk_tail_cut: float | None = None,
 ) -> tuple[float, np.ndarray | None, np.ndarray | None]:
     """Evaluate dispersion `(E_kcal, F_kcal_A [N,3] | None, S_kcal_A3 [3,3] | None)`."""
     on_dev, e_v, f_v, s_v = eval_dispersion_device(
         z_np, pos_np, cell_np, pbc_flags, d3_mode, device, dtype, compute_forces=compute_forces, compute_stress=compute_stress,
+        bulk_tail_cut=bulk_tail_cut,
     )
     if on_dev:
         return _unpack_d3_host(e_v, f_v, s_v, len(z_np))

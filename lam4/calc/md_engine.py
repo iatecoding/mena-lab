@@ -13,7 +13,7 @@ import torch
 from ase.calculators.calculator import all_changes
 
 from lam4.calc.d3_nl_cache import add_md_dispersion, has_triton_d3_on, rebuild_md_buffers
-from lam4.calc.md_nhc import get_fused_nhc_steps, integrate_nhc
+from lam4.calc.md_nhc import compute_nhc_dof, get_fused_nhc_steps, integrate_nhc
 from lam4.calc import md_props as _mdp
 from lam4.calc.md_runner import init_md_engine_state, retarget_md_engine, sync_md_atoms
 from lam4.calc.physics import (
@@ -105,6 +105,11 @@ class MDEngine:
             atoms, self.dev, ensemble=ensemble, temperature_K=temperature_K, timestep_fs=timestep_fs,
             tdamp_fs=tdamp_fs, maxwell=maxwell, seed=seed, remove_com=self.remove_com,
         )
+        self.n_dof = compute_nhc_dof(self.atoms, remove_com=self.remove_com)
+        if self.ensemble == "nvt":
+            self.st.set_dof(self.n_dof)
+        else:
+            self.st.n_dof = self.n_dof
         self._origin_f64 = center_positions_f64(self.atoms.get_positions())[1]
         self.n = len(self.atoms)
         self.z_np = np.asarray(self.atoms.get_atomic_numbers(), dtype=np.int64)
@@ -172,7 +177,7 @@ class MDEngine:
         self.compile_graph_error: str | None = None
         self._nhc_kT_t = torch.tensor(float(self.st.kT), **fkw)
         self._nhc_dt_t = torch.tensor(float(self.st.dt), **fkw)
-        self._nhc_n3_t = torch.tensor(float(3 * self.st.n_global), **fkw)
+        self._nhc_n3_t = torch.tensor(float(self.st.dof), **fkw)
         self._win_snap: list[torch.Tensor] | None = None
         self._pack_buf = torch.zeros(11, **fkw)
         self._auto_graph = use_graph == "auto"
@@ -259,7 +264,7 @@ class MDEngine:
             retarget_md_engine(self, temperature_K=temperature_K, timestep_fs=timestep_fs, tdamp_fs=tdamp_fs)
             self._nhc_kT_t.fill_(float(self.st.kT))
             self._nhc_dt_t.fill_(float(self.st.dt))
-            self._nhc_n3_t.fill_(float(3 * self.st.n_global))
+            self._nhc_n3_t.fill_(float(self.st.dof))
             self._sub_window = max(1, self.window)
 
     def _sync_chunks(self, fresh: bool) -> None:
@@ -565,7 +570,7 @@ class MDEngine:
 
     def info(self) -> dict[str, Any]:
         return dict(
-            n_atoms=self.n, e_cap=self.e_cap, csr=self.is_csr, sub_window=self._sub_window,
+            n_atoms=self.n, n_dof=self.n_dof, e_cap=self.e_cap, csr=self.is_csr, sub_window=self._sub_window,
             compiled=bool(self._compiled_runner is not None or self._traced_ff is not None),
             traced=self._traced_ff is not None,
             graph=self.graph is not None, graph_error=self.graph_error, compile_graph_error=self.compile_graph_error, **self.stats,

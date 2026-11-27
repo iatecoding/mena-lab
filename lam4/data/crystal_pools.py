@@ -8,6 +8,8 @@ Train rows: the registry train split when it exists (data/splits/*_train_idx.npy
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +25,7 @@ POOL_SOURCES = {"mptrj": ("mp_pbe", "mp_pbeU"), "mptrj_salex": ("mp_pbe", "mp_pb
                 "oc20": ("oc20_rpbe", "oc20_rpbe"), "oc22": ("mp_pbe", "oc22_pbeU"), "omc25": ("omc25_pbe", "omc25_pbe"),
                 "oc25": ("oc25_rpbe", "oc25_rpbe"), "mad16_r2scan": ("mad16_r2scan", "mad16_r2scan"), "mad16_pbe": ("mad16_pbe", "mad16_pbe")}
 POOL_TRAIN_SPLIT = {"mptrj": "mptrj_train_idx.npy", "mptrj_salex": "salex_train_idx.npy", "matpes_pbe": "matpes_pbe_train_idx.npy", "matpes_r2scan": "matpes_r2scan_train_idx.npy"}
+POOL_VAL_SPLIT = {"mptrj": "mptrj_val_2k.npy", "mptrj_salex": "salex_val_2k.npy", "matpes_pbe": "matpes_pbe_val_1k.npy", "matpes_r2scan": "matpes_r2scan_val_1k.npy"}
 DEFAULT_SHARES = {"mptrj_salex": 0.38, "omat24": 0.30, "matpes_pbe": 0.085, "matpes_r2scan": 0.085, "oc20": 0.075, "oc22": 0.075, "mptrj": 1.0, "omc25": 0.05,
                   "oc25": 0.14, "mad16_r2scan": 0.035, "mad16_pbe": 0.015}
 # Periodic G4 100h epoch-capped shares (sum=1.0; at 20.24B periodic atom-steps: MAD-1.6 95.1x<=115x, MatPES-r2SCAN 132.3x<=150x, MatPES-PBE 78.2x<=100x)
@@ -63,19 +66,135 @@ def parse_pools(spec: str = "", root: str = "", *, profile: str = "lam5") -> lis
     return out
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_split_disjointness(
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    *,
+    pool: str = "",
+    train_path: str | Path = "",
+    val_path: str | Path = "",
+) -> None:
+    """Raise `ValueError` if train and validation row indices share any element."""
+    tr = np.asarray(train_idx, dtype=np.int64).ravel()
+    vl = np.asarray(val_idx, dtype=np.int64).ravel()
+    overlap = np.intersect1d(tr, vl)
+    if overlap.size > 0:
+        raise ValueError(
+            f"train/val split leakage detected for pool={pool!r}: {overlap.size} overlapping row indices "
+            f"(first 5: {overlap[:5].tolist()}) between {train_path} and {val_path}"
+        )
+
+
+def verify_splits_dir(
+    splits_dir: str | Path = SPLITS,
+    *,
+    manifest_path: str | Path | None = None,
+    require_all: bool = True,
+) -> dict[str, dict]:
+    """Verify presence, non-emptiness, train/val disjointness, and optional SHA-256 checksums of registry splits."""
+    sp_dir = Path(splits_dir)
+    manifest_splits: dict = {}
+    if manifest_path is not None:
+        manifest_splits = json.loads(Path(manifest_path).read_text(encoding="utf-8")).get("splits", {})
+    manifest_key_by_pool = {
+        "mptrj": "mp_pbe",
+        "mptrj_salex": "mptrj_salex_pbe",
+        "matpes_pbe": "matpes_pbe",
+        "matpes_r2scan": "matpes_r2scan",
+    }
+    summary: dict[str, dict] = {}
+    for pool, tr_name in POOL_TRAIN_SPLIT.items():
+        tr_p = sp_dir / tr_name
+        vl_name = POOL_VAL_SPLIT.get(pool)
+        vl_p = (sp_dir / vl_name) if vl_name else None
+        if not tr_p.is_file():
+            if require_all:
+                raise FileNotFoundError(f"missing required registry train split {tr_p} for pool={pool!r}")
+            continue
+        tr_idx = np.asarray(np.load(tr_p), dtype=np.int64)
+        if tr_idx.size == 0:
+            raise ValueError(f"empty train split {tr_p} for pool={pool!r}")
+        tr_sha = _sha256_file(tr_p)
+        vl_count = 0
+        vl_sha = None
+        if vl_p is not None and vl_p.is_file():
+            vl_idx = np.asarray(np.load(vl_p), dtype=np.int64)
+            verify_split_disjointness(tr_idx, vl_idx, pool=pool, train_path=tr_p, val_path=vl_p)
+            vl_count = int(vl_idx.size)
+            vl_sha = _sha256_file(vl_p)
+        if pool == "mptrj" and (sp_dir / "val_idx.npy").is_file():
+            verify_split_disjointness(tr_idx, np.load(sp_dir / "val_idx.npy"), pool=pool, train_path=tr_p, val_path=sp_dir / "val_idx.npy")
+        m_entry = manifest_splits.get(manifest_key_by_pool.get(pool, ""), {})
+        if m_entry.get("train_sha256") and tr_sha != m_entry["train_sha256"]:
+            raise ValueError(f"SHA-256 mismatch for {tr_p}: got {tr_sha}, expected {m_entry['train_sha256']}")
+        if vl_sha is not None and m_entry.get("val_sha256") and vl_sha != m_entry["val_sha256"]:
+            raise ValueError(f"SHA-256 mismatch for {vl_p}: got {vl_sha}, expected {m_entry['val_sha256']}")
+        summary[pool] = {
+            "train_count": int(tr_idx.size),
+            "val_count": vl_count,
+            "overlap": 0,
+            "train_sha256": tr_sha,
+            "val_sha256": vl_sha,
+        }
+    return summary
+
+
 def build_source(name: str, dirs: list[str], max_atoms: int = 400, *, e0_tables: tuple[np.ndarray, np.ndarray] | None = None,
-                 derive_u_atoms: bool = True, cache_u_atoms: bool = True, u_atom_cache_bytes: int | None = None) -> CrystalSource:
+                 derive_u_atoms: bool = True, cache_u_atoms: bool = True, u_atom_cache_bytes: int | None = None,
+                 splits_dir: str | Path | None = None, allow_unsplit: bool = False) -> CrystalSource:
     idx = None
+    sp_dir = SPLITS if splits_dir is None else Path(splits_dir)
     if len(dirs) == 1:
         n_total = len(MatFlat(dirs[0]))
-        mp_sp = SPLITS / "mptrj_train_idx.npy"
-        if name == "mptrj_salex" and n_total >= MPTRJ_N_TOTAL and mp_sp.exists():
-            mp_tr = np.asarray(np.load(mp_sp), dtype=np.int64)
-            idx = np.concatenate([mp_tr, np.arange(MPTRJ_N_TOTAL, n_total, dtype=np.int64)])
-        elif name in POOL_TRAIN_SPLIT and (SPLITS / POOL_TRAIN_SPLIT[name]).exists():
-            idx = np.load(SPLITS / POOL_TRAIN_SPLIT[name])
-        elif (Path(dirs[0]) / "splits" / "train_idx.npy").exists():
-            idx = np.load(Path(dirs[0]) / "splits" / "train_idx.npy")
+        if name == "mptrj_salex" and n_total >= MPTRJ_N_TOTAL:
+            mp_sp = sp_dir / "mptrj_train_idx.npy"
+            if not mp_sp.is_file():
+                if not allow_unsplit:
+                    raise FileNotFoundError(
+                        f"missing required registry train split {mp_sp} for pool {name!r} (n_total={n_total:,}); "
+                        f"refusing silent fallback to unsplit flat (pass allow_unsplit=True only for synthetic smoke tests)"
+                    )
+            else:
+                mp_tr = np.asarray(np.load(mp_sp), dtype=np.int64)
+                if mp_tr.size == 0:
+                    raise ValueError(f"empty train split {mp_sp} for pool {name!r}")
+                for val_name in ("mptrj_val_2k.npy", "val_idx.npy"):
+                    val_p = sp_dir / val_name
+                    if val_p.is_file():
+                        verify_split_disjointness(mp_tr, np.load(val_p), pool=name, train_path=mp_sp, val_path=val_p)
+                idx = np.concatenate([mp_tr, np.arange(MPTRJ_N_TOTAL, n_total, dtype=np.int64)])
+        elif name in POOL_TRAIN_SPLIT:
+            tr_sp = sp_dir / POOL_TRAIN_SPLIT[name]
+            if not tr_sp.is_file():
+                if not allow_unsplit:
+                    raise FileNotFoundError(
+                        f"missing required registry train split {tr_sp} for pool {name!r}; "
+                        f"refusing silent fallback to <flat>/splits/train_idx.npy or unsplit flat "
+                        f"(pass allow_unsplit=True only for synthetic smoke tests)"
+                    )
+            else:
+                idx = np.asarray(np.load(tr_sp), dtype=np.int64)
+                if idx.size == 0:
+                    raise ValueError(f"empty train split {tr_sp} for pool {name!r}")
+                val_name = POOL_VAL_SPLIT.get(name)
+                if val_name and (sp_dir / val_name).is_file():
+                    verify_split_disjointness(idx, np.load(sp_dir / val_name), pool=name, train_path=tr_sp, val_path=sp_dir / val_name)
+                if name == "mptrj" and (sp_dir / "val_idx.npy").is_file():
+                    verify_split_disjointness(idx, np.load(sp_dir / "val_idx.npy"), pool=name, train_path=tr_sp, val_path=sp_dir / "val_idx.npy")
+        elif (Path(dirs[0]) / "splits" / "train_idx.npy").is_file():
+            local_tr = Path(dirs[0]) / "splits" / "train_idx.npy"
+            idx = np.asarray(np.load(local_tr), dtype=np.int64)
+            local_val = Path(dirs[0]) / "splits" / "val_idx.npy"
+            if local_val.is_file():
+                verify_split_disjointness(idx, np.load(local_val), pool=name, train_path=local_tr, val_path=local_val)
     kw = {}
     if e0_tables is not None:
         kw["e0_tables"] = e0_tables
@@ -89,14 +208,14 @@ def build_source(name: str, dirs: list[str], max_atoms: int = 400, *, e0_tables:
 
 
 def build_crystal_domain(pools: list[tuple[str, list[str], float]], n_pad: int, seed: int, device, plan: dict | None = None, k: int = 128, log=print, *,
-                         pair_frac: float = 0.0) -> tuple[DomainSampler, dict]:
+                         pair_frac: float = 0.0, splits_dir: str | Path | None = None, allow_unsplit: bool = False) -> tuple[DomainSampler, dict]:
     """One stream per pool, mixed by the pool shares. plan = {"n_pad", "k", "e_pad"} from a previous run (plans.json), else e_pad = the max over the pools' calibrations."""
     if not pools:
         raise ValueError("no crystal pools")
     k = plan["k"] if plan else k
     streams = {}
     for i, (name, dirs, _) in enumerate(pools):
-        src = build_source(name, dirs)
+        src = build_source(name, dirs, splits_dir=splits_dir, allow_unsplit=allow_unsplit)
         streams[name] = CrystalStream(src, n_pad=n_pad, k=k, seed=seed + 100 + i, device=device, e_pad=plan["e_pad"] if plan else None, pair_frac=pair_frac)
         uc = getattr(src, "_ucache", None)
         cache_note = f", u_atom_cache_cap={uc.max_bytes // (1024 * 1024)}MiB" if uc is not None else ""
@@ -118,8 +237,9 @@ def build_crystal_domain(pools: list[tuple[str, list[str], float]], n_pad: int, 
     return DomainSampler(streams, {n: sh for n, _, sh in pools}), {"n_pad": n_pad, "k": k, "e_pad": int(e_pad)}
 
 
-def val_sets(root: str, cap: int, seed: int = 0, max_atoms: int = 400, *, profile: str = "lam5") -> dict[str, CrystalSource]:
+def val_sets(root: str, cap: int, seed: int = 0, max_atoms: int = 400, *, profile: str = "lam5", splits_dir: str | Path | None = None) -> dict[str, CrystalSource]:
     """The registry validation splits found under `root`, each capped to `cap` random structures (0 = all)."""
+    sp_dir = SPLITS if splits_dir is None else Path(splits_dir)
     out = {}
     for split, (pool, sub) in VAL_SETS.items():
         if profile == "lam6" and split == "oc22_val":
@@ -130,7 +250,7 @@ def val_sets(root: str, cap: int, seed: int = 0, max_atoms: int = 400, *, profil
                 if alt.exists():
                     d = alt
                     break
-        sp = SPLITS / f"{split}.npy"
+        sp = sp_dir / f"{split}.npy"
         if not sp.exists():
             sp = d / "splits" / "val_idx.npy"
         if not (d.exists() and (sp.exists() or split in WHOLE_FLAT_VAL)):

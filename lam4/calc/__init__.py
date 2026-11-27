@@ -36,6 +36,7 @@ from lam4.calc.interpret import (
 from lam4.calc.loader import load_lam4_checkpoint, resolve_lam4_config
 from lam4.calc.md_runner import can_use_md_engine, relax_atoms, run_md
 from lam4.calc.physics import E_ANG_TO_DEBYE, IR_KM_MOL_FACTOR, harmonic_ir_raman, polarizability_tensor, resolve_lot_and_u
+from lam4.calc.trpmd import TRPMDEngine, compute_ir_spectrum
 
 __all__ = [
     "BONDI_RADII",
@@ -52,6 +53,7 @@ __all__ = [
     "MenaCalculator",
     "OBC1_PARAMS",
     "OBC2_PARAMS",
+    "TRPMDEngine",
     "VA_PER_EA2",
     "analyze_binding_multipoles",
     "build_gbsa_context",
@@ -59,6 +61,7 @@ __all__ = [
     "compute_born_radii",
     "compute_fragment_ddg_solv",
     "compute_gbsa",
+    "compute_ir_spectrum",
     "compute_multipole_gbsa",
     "compute_sasa",
     "dipole_field_ea2",

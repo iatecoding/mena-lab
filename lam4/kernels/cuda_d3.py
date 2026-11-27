@@ -6,28 +6,26 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from lam.models.dispersion import ANGSTROM_TO_BOHR, WB97M_D3BJ
+from lam.models.dispersion import WB97M_D3BJ
 from lam4.core.consts import capturing, storable
 from lam4.core.radial import norm_device
 from lam4.kernels.cuda_d3_src import CUDA_D3_SRC
 from lam4.kernels.cuda_ext import cuda_ext_ready, load_cuda_ext
-from lam4.kernels.metal_d3 import d3_rank1_tables_np
+from lam4.kernels.metal_d3 import d3_mode_cutoffs, d3_r0ab_np, d3_rank1_tables_np
 from lam4.kernels.triton_coulomb import build_group_ptr
 
 _CPP_DECLS = r"""
 void cuda_d3_launch(
     torch::Tensor pos, torch::Tensor z, torch::Tensor mask, torch::Tensor graph,
     torch::Tensor ptr, torch::Tensor send_idx, torch::Tensor shift, torch::Tensor cell,
-    torch::Tensor rcov, torch::Tensor r2r4, torch::Tensor n_ref, torch::Tensor cn_ref, torch::Tensor c6_mat,
+    torch::Tensor rcov, torch::Tensor r2r4, torch::Tensor n_ref, torch::Tensor cn_ref, torch::Tensor c6_mat, torch::Tensor r0ab,
     torch::Tensor pw, torch::Tensor dpw, torch::Tensor out_e, torch::Tensor out_dedcn,
     torch::Tensor out_f, torch::Tensor out_vir,
     int64_t n_atoms, int64_t flags, bool is_csr,
     double s6, double s8, double p_a1, double p_a2, double r_cut, double taper_on, double inv_tspan, double cn_cut_b);
 """
 
-_D3_R1_TABS: dict[torch.device, tuple[Tensor, Tensor, Tensor, Tensor, Tensor]] = {}
-_CN_CUT_BOHR = float(11.2 * ANGSTROM_TO_BOHR)
-_R_CUT, _TAPER_ON, _INV_TSPAN = 12.0, 9.0, float(1.0 / (12.0 - 9.0))
+_D3_R1_TABS: dict[torch.device, tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]] = {}
 _MODE_PARAMS: dict[str, tuple[bool, float, float, float, float]] = {
     "bj_wb97m": (False, float(WB97M_D3BJ["s6"]), float(WB97M_D3BJ["s8"]), float(WB97M_D3BJ["a1"]), float(WB97M_D3BJ["a2"])),
     "zero_pbe": (True, 1.0, 0.722, 1.217, 14.0),
@@ -49,7 +47,7 @@ def has_cuda_d3(dev: torch.device | str | None = None) -> bool:
     return cuda_ext_ready("LAM4_CUDA_D3", "lam4_cuda_d3", dev, _ext)
 
 
-def _get_r1_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+def _get_r1_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     ndev = norm_device(dev)
     tabs = _D3_R1_TABS.get(ndev)
     if tabs is None:
@@ -62,6 +60,7 @@ def _get_r1_tables(dev: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor, T
             torch.from_numpy(n_ref).to(device=ndev, dtype=torch.int32).contiguous(),
             torch.from_numpy(cn_ref).to(device=ndev, dtype=torch.float32).contiguous(),
             torch.from_numpy(c6_mat).to(device=ndev, dtype=torch.float32).contiguous(),
+            torch.from_numpy(d3_r0ab_np()).to(device=ndev, dtype=torch.float32).contiguous(),
         )
         if storable(tabs[0]):
             _D3_R1_TABS[ndev] = tabs
@@ -95,7 +94,8 @@ def cuda_d3_grouped(
     if n_atoms == 0 or g_cnt == 0:
         return torch.zeros(g_cnt, dtype=torch.float64, device=dev), (torch.zeros((n_atoms, 3), dtype=torch.float32, device=dev) if compute_forces else None)
     is_zero, s6, s8, a1, a2 = _MODE_PARAMS[d3_mode]
-    rcov, r2r4, n_ref, cn_ref, c6_mat = _get_r1_tables(dev)
+    r_cut, taper_on, cn_cut_b, inv_tspan = d3_mode_cutoffs(d3_mode)
+    rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab = _get_r1_tables(dev)
     pos_c = pos.to(torch.float32).contiguous()
     z_c = z.to(torch.int64).contiguous()
     g_c = graph.to(torch.int64).contiguous()
@@ -110,8 +110,8 @@ def cuda_d3_grouped(
     forces = torch.empty((n_atoms, 3), dtype=torch.float32, device=dev) if compute_forces else pos_c[:1]
     _require_ext().cuda_d3_launch(
         pos_c, z_c, mask_u8, g_c, ptr, ptr, pos_c[:1], pos_c[:1],
-        rcov, r2r4, n_ref, cn_ref, c6_mat, pw, dpw, e_atom, dedcn, forces, pos_c[:1],
-        n_atoms, flags, False, s6, s8, a1, a2, _R_CUT, _TAPER_ON, _INV_TSPAN, _CN_CUT_BOHR,
+        rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab, pw, dpw, e_atom, dedcn, forces, pos_c[:1],
+        n_atoms, flags, False, s6, s8, a1, a2, r_cut, taper_on, inv_tspan, cn_cut_b,
     )
     return _reduce_e(e_atom, g_c, g_cnt), (forces if compute_forces else None)
 
@@ -134,7 +134,8 @@ def cuda_d3_csr(
             torch.zeros((g_cnt, 3, 3), dtype=torch.float64, device=dev) if do_stress else None,
         )
     is_zero, s6, s8, a1, a2 = _MODE_PARAMS[d3_mode]
-    rcov, r2r4, n_ref, cn_ref, c6_mat = _get_r1_tables(dev)
+    r_cut, taper_on, cn_cut_b, inv_tspan = d3_mode_cutoffs(d3_mode)
+    rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab = _get_r1_tables(dev)
     pos_c = pos.to(torch.float32).contiguous()
     z_c = z.to(torch.int64).contiguous()
     rp_c = recv_ptr.to(torch.int32).contiguous()
@@ -161,8 +162,8 @@ def cuda_d3_csr(
     vir = torch.empty((n_atoms, 6), dtype=torch.float32, device=dev) if do_stress else pos_c[:1]
     _require_ext().cuda_d3_launch(
         pos_c, z_c, mask_u8, g_c, rp_c, si_c, sh_c, cell_c,
-        rcov, r2r4, n_ref, cn_ref, c6_mat, pw, dpw, e_atom, dedcn, forces, vir,
-        n_atoms, flags, True, s6, s8, a1, a2, _R_CUT, _TAPER_ON, _INV_TSPAN, _CN_CUT_BOHR,
+        rcov, r2r4, n_ref, cn_ref, c6_mat, r0ab, pw, dpw, e_atom, dedcn, forces, vir,
+        n_atoms, flags, True, s6, s8, a1, a2, r_cut, taper_on, inv_tspan, cn_cut_b,
     )
     e_graph = _reduce_e(e_atom, g_c if (g_cnt > 1 and graph is not None) else None, g_cnt)
     stress = None

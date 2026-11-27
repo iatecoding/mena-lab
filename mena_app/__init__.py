@@ -4,7 +4,7 @@ The command line and the web server never import torch themselves: every job run
 `calculator()`, `singlepoint()`, `relax()`, `run_md()`, and `available_models()` are lazy Python entry points.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def calculator(*args, **kwargs):

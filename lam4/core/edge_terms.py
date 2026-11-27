@@ -49,6 +49,8 @@ def edge_basis(x: Tensor, r_cut: float = R_CUT) -> Tensor:
     return bspline_eval(upcast_fp32(x), torch.eye(N_RBF, dtype=dt, device=x.device), r_cut)
 
 QK_EPS = 1e-6
+R_EPS2_F32 = 1e-12  # coincident-atom guard threshold (r <= 1e-6 A in fp32): bit-identical for all physical r > 1e-6 A
+R_EPS2_F64 = 1e-24  # coincident-atom guard threshold (r <= 1e-12 A in fp64): bit-identical for all physical r > 1e-12 A
 BIAS_BOUND = 2.0  # |radial logit bias| <= 2, so |logit| <= 3: exp needs no running max and the +1 self term cannot dominate
 _NEAR_BASE: dict = {}
 _NEAR_MASK: dict = {}
@@ -140,8 +142,12 @@ def _edge_r_u_x(d: Tensor, rho: Tensor | None, cfg: EdgeCfg, z_recv: Tensor | No
                 ) -> tuple[Tensor, Tensor, Tensor]:
     df = upcast_fp32(d)
     rhof = None if rho is None else upcast_fp32(rho)
-    r = df.pow(2).sum(-1).sqrt()
-    u = df / r.unsqueeze(-1)
+    r2 = df.pow(2).sum(-1)
+    r_eps2 = R_EPS2_F64 if df.dtype == torch.float64 else R_EPS2_F32
+    nz = r2 > r_eps2
+    r_safe = torch.where(nz, r2, torch.ones_like(r2)).sqrt()
+    r = torch.where(nz, r_safe, torch.zeros_like(r2))
+    u = torch.where(nz.unsqueeze(-1), df / r_safe.unsqueeze(-1), torch.zeros_like(df))
     if cfg.floor and z_recv is not None:
         r = floored_length(df, z_recv, z_send, r)
     return r, u, warp_distance(r, rhof, cfg.r_cut)

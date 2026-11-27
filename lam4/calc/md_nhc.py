@@ -9,11 +9,33 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 
 # ASE nose_hoover_chain.FOURTH_ORDER_COEFFS (Suzuki-Yoshida)
 SY_COEFFS = (1 / (2 - 2 ** (1 / 3)), -(2 ** (1 / 3)) / (2 - 2 ** (1 / 3)), 1 / (2 - 2 ** (1 / 3)))
+
+
+def compute_nhc_dof(atoms: Any, *, remove_com: bool = True) -> int:
+    """Compute active kinetic degrees of freedom for NHC thermostatting.
+
+    Matches `_thermalize_and_zero_com` / `_zero_rotation_safe`:
+    - `remove_com=False`, `N==1`, or constrained systems: `3*N`
+    - Periodic (`any(pbc)`): `max(1, 3*N - 3)` (3 translational COM DOF removed)
+    - Open molecule: `max(1, 3*N - 3 - n_rot)` where `n_rot` is 3 (nonlinear) or 2 (linear)
+    """
+    n = len(atoms)
+    if n <= 0:
+        return 0
+    if not remove_com or n == 1 or getattr(atoms, "constraints", None):
+        return 3 * n
+    if bool(np.any(atoms.get_pbc())):
+        return max(1, 3 * n - 3)
+    ip = np.asarray(atoms.get_moments_of_inertia(), dtype=np.float64)
+    n_rot = int(np.sum(ip > 1e-9))
+    removed_rot = n_rot if n_rot >= 2 else 0
+    return max(1, 3 * n - 3 - removed_rot)
 
 
 @dataclass
@@ -30,20 +52,30 @@ class NHCState:
     dt: float
     tchain: int
     tloop: int
+    n_dof: int | None = None
+
+    @property
+    def dof(self) -> int:
+        return int(self.n_dof) if self.n_dof is not None else 3 * int(self.n_global)
 
     @classmethod
-    def from_ase(cls, dyn, device) -> "NHCState":
+    def from_ase(cls, dyn, device, *, n_dof: int | None = None) -> "NHCState":
         th = dyn._thermostat
         dev = torch.device(device)
         dt_state = torch.float32 if dev.type == "mps" else torch.float64
         kw = dict(dtype=dt_state, device=dev)
+        n_glob = int(th._num_atoms_global)
+        dof_val = 3 * n_glob if n_dof is None else max(1, int(n_dof))
+        q_list = [float(x) for x in th._Q]
+        if n_dof is not None and n_glob > 0 and len(q_list) > 0:
+            q_list[0] = q_list[0] * (float(dof_val) / float(3 * n_glob))
         return cls(q=torch.tensor(dyn._q, **kw), p=torch.tensor(dyn._p, **kw), eta=torch.tensor(th._eta, **kw),
                    p_eta=torch.tensor(th._p_eta, **kw), masses=torch.tensor(dyn.masses, **kw).reshape(-1, 1),
-                   Q=[float(x) for x in th._Q], Q_t=torch.tensor(th._Q, **kw), kT=float(th._kT),
-                   n_global=int(th._num_atoms_global), dt=float(dyn.dt), tchain=int(th._tchain), tloop=int(th._tloop))
+                   Q=q_list, Q_t=torch.tensor(q_list, **kw), kT=float(th._kT),
+                   n_global=n_glob, dt=float(dyn.dt), tchain=int(th._tchain), tloop=int(th._tloop), n_dof=dof_val)
 
     @classmethod
-    def for_nve(cls, atoms, timestep_fs: float, device) -> "NHCState":
+    def for_nve(cls, atoms, timestep_fs: float, device, *, n_dof: int | None = None) -> "NHCState":
         """Construct a Velocity-Verlet `NHCState` on `device` from `atoms` without thermostat overhead."""
         from ase import units
 
@@ -51,13 +83,24 @@ class NHCState:
         dt_state = torch.float32 if dev.type == "mps" else torch.float64
         kw = dict(dtype=dt_state, device=dev)
         tchain = 3
+        dof_val = 3 * len(atoms) if n_dof is None else max(1, int(n_dof))
         return cls(
             q=torch.tensor(atoms.get_positions(), **kw), p=torch.tensor(atoms.get_momenta(), **kw),
             eta=torch.zeros(tchain, **kw), p_eta=torch.zeros(tchain, **kw),
             masses=torch.tensor(atoms.get_masses(), **kw).reshape(-1, 1),
             Q=[1.0] * tchain, Q_t=torch.ones(tchain, **kw), kT=0.0,
-            n_global=len(atoms), dt=float(timestep_fs * units.fs), tchain=tchain, tloop=1,
+            n_global=len(atoms), dt=float(timestep_fs * units.fs), tchain=tchain, tloop=1, n_dof=dof_val,
         )
+
+    def set_dof(self, n_dof: int) -> None:
+        """Update active NHC kinetic degrees of freedom and scale chain mass `Q[0] = n_dof * q1`."""
+        old_dof = max(1, self.dof)
+        new_dof = max(1, int(n_dof))
+        self.n_dof = new_dof
+        if len(self.Q) > 0 and self.kT > 0.0:
+            q1 = float(self.Q[1]) if len(self.Q) > 1 else float(self.Q[0]) / float(old_dof)
+            self.Q[0] = float(new_dof) * q1
+            self.Q_t.copy_(torch.tensor(self.Q, dtype=self.Q_t.dtype, device=self.Q_t.device))
 
     def update_params(self, *, timestep_fs: float | None = None, temperature_K: float | None = None, tdamp_fs: float | None = None) -> None:
         """Update integration `dt` and/or NHC thermostat `kT` and chain masses `Q` in place."""
@@ -70,13 +113,13 @@ class NHCState:
             td = float(tdamp_fs * units.fs)
             q1 = kT * td * td
             self.kT = kT
-            self.Q = [3.0 * self.n_global * q1] + [q1] * (self.tchain - 1)
+            self.Q = [float(self.dof) * q1] + [q1] * (self.tchain - 1)
             self.Q_t.copy_(torch.tensor(self.Q, dtype=self.Q_t.dtype, device=self.Q_t.device))
 
 
 def integrate_nhc(st: NHCState, p: Tensor, p_eta: list, eta: Tensor, delta: float):
     """`integrate_nhc`: p_eta is a python list of 0-d tensors (one per chain link); returns (p, p_eta, eta)."""
-    M, Q, kT, n3 = st.tchain, st.Q, st.kT, 3 * st.n_global
+    M, Q, kT, n3 = st.tchain, st.Q, st.kT, st.dof
 
     def p_eta_j(p, j, d2, d4):
         if j < M - 1:

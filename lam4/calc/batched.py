@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from lam4.calc.loader import warn_or_raise_untrained_lot
 from lam4.calc.multipole_pack import (
     append_multipole_flat_parts, slice_multipoles_dict, unpack_multipoles_from_host, wants_multipoles,
 )
@@ -27,12 +28,14 @@ from lam4.kernels.csr_plan import build_csr_plan
 if TYPE_CHECKING:
     from lam4.calc.calculator import MenaCalculator
 
-_TERM_KEYS = ("stage0", "stage1", "final", "iso")
+_TERM_KEYS = ("stage0", "stage1", "final", "iso", "iso_atom")
 
 
 def _resolve_frame_lot(calc: "MenaCalculator", at: Atoms, cache: dict[tuple[Any, ...], tuple[Any, int]]) -> tuple[Any, int]:
     if not getattr(calc, "lock_lot", True):
-        return resolve_lot_and_u(at, calc.lot, calc.u_override)
+        res = resolve_lot_and_u(at, calc.lot, calc.u_override)
+        warn_or_raise_untrained_lot(calc, res[0].name)
+        return res
     z_arr = np.asarray(at.get_atomic_numbers(), dtype=np.int64)
     pbc_t = tuple(bool(x) for x in at.get_pbc())
     u_exp = at.info.get("u_flag") if calc.u_override is None else calc.u_override
@@ -40,16 +43,20 @@ def _resolve_frame_lot(calc: "MenaCalculator", at: Atoms, cache: dict[tuple[Any,
         from lam4.registry.hubbard import MP_HUBBARD_ANIONS, MP_HUBBARD_METALS
         z_set = set(z_arr.tolist())
         if (z_set & MP_HUBBARD_ANIONS) and (z_set & MP_HUBBARD_METALS):
-            return resolve_lot_and_u(at, calc.lot, calc.u_override)
+            res = resolve_lot_and_u(at, calc.lot, calc.u_override)
+            warn_or_raise_untrained_lot(calc, res[0].name)
+            return res
     sig = (z_arr.tobytes(), pbc_t, at.info.get("lot"), u_exp, calc.lot, calc.u_override)
     hit = cache.get(sig)
     if hit is not None:
+        warn_or_raise_untrained_lot(calc, hit[0].name)
         return hit
     c_lot = getattr(calc, "_lot_cache", None)
     if c_lot is not None and c_lot[0] == sig:
         res = (c_lot[1], c_lot[2])
     else:
         res = resolve_lot_and_u(at, calc.lot, calc.u_override)
+    warn_or_raise_untrained_lot(calc, res[0].name)
     cache[sig] = res
     return res
 
