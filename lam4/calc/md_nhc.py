@@ -64,11 +64,14 @@ class NHCState:
         dev = torch.device(device)
         dt_state = torch.float32 if dev.type == "mps" else torch.float64
         kw = dict(dtype=dt_state, device=dev)
-        n_glob = int(th._num_atoms_global)
-        dof_val = 3 * n_glob if n_dof is None else max(1, int(n_dof))
+        n_glob_attr = getattr(th, "_num_atoms_global", None)
+        n_glob = int(n_glob_attr) if n_glob_attr is not None else len(dyn.atoms)
+        ase_dof_attr = getattr(th, "_ndof", None)
+        ase_dof = int(ase_dof_attr) if ase_dof_attr is not None else 3 * n_glob
+        dof_val = ase_dof if n_dof is None else max(1, int(n_dof))
         q_list = [float(x) for x in th._Q]
-        if n_dof is not None and n_glob > 0 and len(q_list) > 0:
-            q_list[0] = q_list[0] * (float(dof_val) / float(3 * n_glob))
+        if n_dof is not None and ase_dof > 0 and len(q_list) > 0:
+            q_list[0] = q_list[0] * (float(dof_val) / float(ase_dof))
         return cls(q=torch.tensor(dyn._q, **kw), p=torch.tensor(dyn._p, **kw), eta=torch.tensor(th._eta, **kw),
                    p_eta=torch.tensor(th._p_eta, **kw), masses=torch.tensor(dyn.masses, **kw).reshape(-1, 1),
                    Q=q_list, Q_t=torch.tensor(q_list, **kw), kT=float(th._kT),

@@ -54,6 +54,12 @@ class _LivePhonons(Phonons):
         self.ctx, self.total, self.done = ctx, total, 0
         self.plan, self._table, self._batch_table = plan, None, None
 
+    @property
+    def _refcell_offset(self) -> int:
+        # ASE < 3.30 exposes `.offset`; ASE >= 3.30 renamed it to `.refcell_offset`.
+        off = getattr(self, "refcell_offset", None)
+        return int(self.offset if off is None else off)
+
     def _tick(self) -> None:
         self.done += 1
         self.ctx.progress(self.done, self.total, f"displaced supercell {self.done} of {self.total}")
@@ -63,7 +69,7 @@ class _LivePhonons(Phonons):
             return
         atoms_N = self.atoms * self.supercell
         natoms = len(self.atoms)
-        offset = natoms * self.offset
+        offset = natoms * self._refcell_offset
         p0 = atoms_N.positions[offset:offset + natoms].copy()
         names: list[str] = []
         frames: list = []
@@ -195,7 +201,7 @@ def run(ctx):
             calc._nl_cache = None
     try:
         ph = _LivePhonons(ctx, total, prim, calc, supercell=(k, k, k), delta=p["displacement"], name=work, plan=plan)
-        if plan is not None and ph.offset != plan.offset:  # the plan assumes ASE's reference cell; never guess
+        if plan is not None and ph._refcell_offset != plan.offset:  # the plan assumes ASE's reference cell; never guess
             plan, total = None, full
             ph.plan, ph.total = None, full
         if plan is not None:
